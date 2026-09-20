@@ -16,7 +16,7 @@
 #     split into pain_scores and avpu_scores below.
 # ============================================================
 
-setwd("//net.addenbrookes.nhs.uk/root/Users2-4/chinj/pcaraw")
+setwd("x")
 
 library(tidyverse)
 library(lubridate)
