@@ -68,7 +68,7 @@ library(readxl)
 
 stopifnot(exists("pca_mar_clean"), exists("pca_episodes_flagged"), exists("episode_dose"))
 
-KNOWN_CORRUPTED_CSNS <- c(25786392)  # Confirmed corrupted counter (doses=3914 vs attempts=429)
+
 
 cat("============================================================\n")
 cat("ANALYSIS 13 — TRUE TOTAL DOSE (BACKGROUND + BOLUS)\n")
