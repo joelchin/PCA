@@ -1,44 +1,44 @@
 # ============================================================
-# 7 — Opioid Dose and Consumption
-# Paediatric PCA Study
-# Addenbrooke's Hospital
+# 7 — Opioid dose and consumption (background infusion, bolus)
+# Paediatric PCA/NCA study — Addenbrooke's Hospital (CUH NHS FT)
+# Author: J Chin
+# ============================================================
 #
-# Purpose:
-# Characterise opioid dosing across the cohort
-# Primary: background infusion rate and bolus dose by drug and age
-# Secondary: total estimated background dose per episode (weighted)
-# Comparative: oxycodone vs morphine dose in matched population
+# Purpose
+#   Characterises opioid dosing across the cohort: background infusion rate and
+#   bolus dose by drug and age group, total background dose per episode
+#   (weighted by syringe duration), and the matched oxycodone-vs-morphine dose
+#   comparison.
 #
-# Table 4 (the direct oxycodone-vs-morphine comparison in the matched
-# population) reports background_mg_kg_hr_true as its primary
-# background-rate metric — a duration-weighted per-hour rate
-# (total_background_mg_kg divided by episode_duration_dose_hrs),
-# consistent with the nominal-vs-delivered dose correction applied
-# elsewhere in the pipeline (see 9_comsumption.R and
-# 4_flags.R/10_comparative_PSM.R). background_rate_mg_kg_hr_median (a
-# simple median of per-syringe rates, which doesn't account for how
-# long each syringe was actually running) is retained alongside it as
-# a legacy/reference figure, since it's the metric other descriptive
-# tables in this script (Tables 1, 2, 3, 5, 6) still report and
-# comparing the two side by side is informative.
+# Inputs
+#   In session: pca_mar_clean, pca_episodes_flagged, episode_metrics.
+#   File: psm_matched_keys.rds from the most recent run of 10_comparative_PSM.R
+#   (used only for the matched comparison in Table 4; skipped if absent).
 #
-# Data source: pca_mar_clean
-# - background_rate_ml: extracted from PROGRAMME text (audit.R s2)
-# - bolus_dose_ml: extracted from PROGRAMME text
-# - oxycodone_conc_mg_per_ml: extracted from MED_ORDER
-# - morphine_conc_mg_per_ml: extracted from MED_ORDER
-# - TAKEN_TIME / Discontinue_Time: syringe start/end
+# Output
+#   episode_dose.rds (object episode_dose_clean; also available in the session
+#   as episode_dose, the name the downstream scripts expect).
 #
-# Dose derivation:
-# background_rate_mg_hr = background_rate_ml * concentration
-# background_rate_mg_kg_hr = background_rate_mg_hr / WEIGHT_KG
-# bolus_dose_mg = bolus_dose_ml * concentration
-# bolus_dose_mg_kg = bolus_dose_mg / WEIGHT_KG
-# total_background_mg = sum(rate_mg_hr * syringe_duration_hrs)
-# per episode across all syringes (weighted by syringe duration)
+# Derivation
+#   background_rate_mg_hr    = background_rate_ml * concentration (mg/mL)
+#   background_rate_mg_kg_hr = background_rate_mg_hr / WEIGHT_KG
+#   bolus_dose_mg            = bolus_dose_ml * concentration
+#   total_background_mg      = sum(rate_mg_hr * syringe_duration_hrs) over all
+#                              syringes in the episode
+#   Rates and concentrations are parsed from the pump PROGRAMME and MED_ORDER text
+#   in 2_cleaningscript.R. Missing syringe end times (Discontinue_Time) are
+#   imputed with episode_end.
 #
-# Note: 181 oxycodone records missing Discontinue_Time (last syringe)
-# → imputed with episode_end from pca_episodes_flagged
+# Primary rate metric
+#   background_mg_kg_hr_true = total_background_mg_kg / episode_duration_dose_hrs
+#   (a duration-weighted hourly rate). Table 4, the matched comparison, uses this
+#   as its primary metric. background_rate_mg_kg_hr_median (median of per-syringe
+#   rates) is kept as a legacy reference figure, and Tables 1, 2, 3, 5 and 6
+#   still report it.
+#
+# Limitations
+#   Background dose is the prescribed rate x syringe duration; bolus activations
+#   are not captured here (see 8_true_total_dose.R).
 # ============================================================
 
 library(tidyverse)
@@ -51,7 +51,7 @@ stopifnot(
 )
 
 cat("============================================================\n")
-cat("ANALYSIS 10 — OPIOID DOSE AND CONSUMPTION\n")
+cat("SCRIPT 7 — OPIOID DOSE AND CONSUMPTION\n")
 cat("============================================================\n\n")
 
 fmt_med_iqr <- function(x, digits = 2) {
@@ -96,8 +96,9 @@ n_missing_after <- sum(is.na(pca_mar_clean$morphine_conc_mg_per_ml[
   pca_mar_clean$drug == "morphine"]))
 cat(sprintf("Missing morphine concentration after fix: %d\n\n", n_missing_after))
 
-# TODO: Fix audit.R regex to capture this format in next pipeline rerun
-# Add to morphine concentration extraction:
+# Known limitation: the morphine concentration parser in 2_cleaningscript.R does
+# not capture this order-text format, hence the patch above. To fix at source,
+# add to the morphine concentration extraction:
 # str_extract(MED_ORDER, "morphine (?:sulfate )?([0-9.]+) mg in ([0-9.]+) mL")
 
 # Bridge: assign each syringe record to its episode via time overlap
@@ -431,10 +432,10 @@ matched_keys <- tryCatch(
 if (!is.null(matched_keys)) {
   matched_dose <- episode_dose_clean |>
     semi_join(matched_keys, by = c("PAT_ENC_CSN_ID", "episode_id"))
-  
+
   cat("Matched episodes with dose data:",
       nrow(matched_dose), "\n\n")
-  
+
   cat("--- PRIMARY: duration-weighted background rate (mg/kg/hr) ---\n")
   matched_dose |>
     group_by(drug) |>
@@ -445,7 +446,7 @@ if (!is.null(matched_keys)) {
     ) |>
     print()
   cat("\n")
-  
+
   cat("--- Other dose metrics (background rate shown as legacy\n")
   cat("reference only — see header note) ---\n")
   matched_dose |>
@@ -462,17 +463,17 @@ if (!is.null(matched_keys)) {
     ) |>
     print()
   cat("\n")
-  
+
   # Statistical comparison of doses in matched population
   cat("--- Wilcoxon tests (matched population) ---\n")
   mor_matched <- matched_dose |> filter(drug == "morphine")
   oxy_matched <- matched_dose |> filter(drug == "oxycodone")
-  
+
   cat("PRIMARY:\n")
   wt_primary <- wilcox.test(oxy_matched$background_mg_kg_hr_true,
                             mor_matched$background_mg_kg_hr_true, na.rm = TRUE)
   cat(sprintf(" %-40s p=%.4f\n", "background_mg_kg_hr_true", wt_primary$p.value))
-  
+
   cat("\nOther metrics (legacy/secondary):\n")
   for (var in c("background_rate_mg_kg_hr_median",
                 "bolus_dose_mg_kg_first",
@@ -482,7 +483,7 @@ if (!is.null(matched_keys)) {
     cat(sprintf(" %-40s p=%.4f\n", var, wt$p.value))
   }
   cat("\n")
-  
+
   cat("If PRIMARY's p-value here diverges materially from the\n")
   cat("manuscript's actual locked Table 4 consumption figures\n")
   cat("(10_comparative_PSM.R / 16_publication_tables.R), investigate\n")
@@ -576,7 +577,7 @@ saveRDS(episode_dose_clean,
 
 # This script builds/saves the object under the name
 # episode_dose_clean, but every downstream script (16_publication_tables.R,
-# 9_comsumption.R, 8_true_total_dose.R) checks for and uses an in-session object
+# 9_consumption.R, 8_true_total_dose.R) checks for and uses an in-session object
 # literally called episode_dose. Aliased here so the session object
 # name matches what everything downstream expects.
 episode_dose <- episode_dose_clean
@@ -585,7 +586,7 @@ cat("episode_dose.rds saved\n\n")
 cat("episode_dose (alias of episode_dose_clean) available in session\n\n")
 
 cat("============================================================\n")
-cat("ANALYSIS 10 COMPLETE\n")
+cat("SCRIPT 7 COMPLETE\n")
 cat("Key outputs:\n")
 cat(" - Background infusion rates by drug and age group\n")
 cat(" - Bolus doses by drug and age group\n")

@@ -1,50 +1,54 @@
 # ============================================================
-# 4 — Episode Flags
-# Paediatric PCA Study
-# Addenbrooke's Hospital
+# 4 — Episode flags, exclusions and final outcome classifications
+# Paediatric PCA/NCA study — Addenbrooke's Hospital (CUH NHS FT)
+# Author: J Chin
+# ============================================================
 #
-# Builds the derived episode-level flags used throughout the rest of
-# the pipeline: exclusion criteria, concurrent-epidural detection,
-# admission-type classification, and the finalised side-effect
-# outcome flags.
+# Purpose
+#   Adds every episode-level flag used downstream to pca_episodes and saves the
+#   result as pca_episodes_flagged (the single source of truth for episodes).
 #
-# A few design decisions worth documenting here:
+# Inputs
+#   Files (1 - data/3 - processed_data/): admissions_clean, pca_episodes,
+#     non_pca_mar_clean, nerve_blocks_clean, operations_clean, intraop_mar_clean,
+#     lda_epidural_clean, anaesthesia_events_clean,
+#     naloxone_reclassifications (manual chart-review recoding of naloxone
+#     events; created outside this pipeline, patient-level, not shareable;
+#     must contain PAT_ENC_CSN_ID, ADMIN_TIME, reclassified_to — checked on load).
+#   In session: pain_scores_clean. drug_lists.R is sourced below.
 #
-#   Concurrent epidural is defined from two sources only:
-#     1. the LDA epidural table (had_lda_epidural) — a continuous
-#        catheter
-#     2. intrathecal MAR route (neuraxial_intrathecal_mar) — spinal
-#   Epidural-route MAR entries without a corresponding LDA record are
-#   excluded from the primary concurrent-epidural flag, since these
-#   more likely represent single-shot caudal blocks in this
-#   population (no LDA entry is expected for a caudal, and clonidine
-#   co-administration is consistent with this). These are retained
-#   separately as the neuraxial_epidural_mar_only sensitivity flag.
-#   Methods text: "Epidural route entries in the intraoperative MAR
-#   without a corresponding LDA record were not classified as
-#   concurrent epidural, as these likely represent caudal blocks in
-#   the paediatric population."
+# Output
+#   pca_episodes_flagged.rds
 #
-#   admission_type_detailed sits alongside the original
-#   admission_type (kept unchanged, since other analyses may depend
-#   on its exact categories) rather than replacing it. The original
-#   field collapses everything non-orthopaedic into "Other surgical"
-#   and everything non-surgical into "Medical", which hides
-#   clinically important distinctions — oncology vs GI vs general
-#   medical admissions matter for isolating true opioid-driven side
-#   effects (e.g. antiemetic burden) from confounds like
-#   chemotherapy-related or disease-related nausea.
-#   likely_nonopioid_nausea_confound is derived from
-#   admission_type_detailed for this reason.
+# Flags
+#   1  Episode sequence (first line, first episode)
+#   2  Concurrent nerve block / epidural
+#   3  Chemotherapy
+#   4  Intraoperative drug exposures
+#   5  Exclusion flags: exclude_minor_procedure_any (conservative) and
+#      exclude_minor_procedure_any_strict, incl. exclude_pca_before_procedure.
+#      These apply to the S3/PSM population only.
+#   6  Demographics. proc_category and PFMD_PROC_OPCS_CODES arrive already
+#      attached at episode level from 2_cleaningscript.R (Section 6D);
+#      operations_clean is deliberately NOT re-joined here.
+#   7  Era
+#   8  Admission type. admission_type keeps its original categories
+#      (backward compatibility); admission_type_detailed and
+#      likely_nonopioid_nausea_confound are added alongside it.
+#   9  Final side-effect classifications (reactive antiemetic, antipruritic,
+#      naloxone reversal, composite) — definitions documented at Flag 9.
+#      These are computed once here and read by scripts 10-14; they are not
+#      recomputed elsewhere.
 #
-#   proc_category and PFMD_PROC_OPCS_CODES arrive on pca_episodes
-#   already attached at episode level from 2_cleaningscript.R
-#   (Section 6D) — each episode matched to whichever operation is
-#   actually nearest in time to it (via OpDate), not simply whichever
-#   operation was first for the admission as a whole. Flag 6 below
-#   does not join operations_clean again for this reason: doing so
-#   would apply the coarser admission-level attribution on top of the
-#   already-correct episode-level one.
+# Concurrent epidural (concurrent_epidural)
+#   Defined from two definitive sources: the LDA epidural table (continuous
+#   catheter) and the intrathecal MAR route (spinal). Epidural-route MAR entries
+#   without an LDA record are not classified as concurrent epidural because
+#   they most likely represent single-shot caudal blocks (neuraxial_epidural_mar_only
+#   is retained as a sensitivity flag).
+#   Methods text: "Epidural route entries in the intraoperative MAR without a
+#   corresponding LDA record were not classified as concurrent epidural, as
+#   these likely represent caudal blocks in the paediatric population."
 # ============================================================
 
 library(tidyverse)
@@ -220,22 +224,22 @@ pca_episodes <- pca_episodes |>
   left_join(lda_epidural_csns, by = "PAT_ENC_CSN_ID") |>
   mutate(
     had_lda_epidural = replace_na(had_lda_epidural, FALSE),
-    
+
     # PRIMARY: definitive neuraxial sources only
     concurrent_epidural = had_lda_epidural,
-    
+
     # concurrent_epidural = LDA epidural table only
     # Rationale: LDA captures continuous running catheters (definitive)
     # Intrathecal MAR (spinals) excluded — single intraop dose,
     # typically wears off within 12-18hrs; PCA remains primary
     # postoperative analgesic for majority of episode
     # neuraxial_intrathecal_mar retained as PSM covariate
-    
+
     # SENSITIVITY: epidural MAR without LDA — likely caudals
     neuraxial_epidural_mar_only = neuraxial_epidural_mar &
       !had_lda_epidural &
       !neuraxial_intrathecal_mar,
-    
+
     # RETAINED for compatibility
     neuraxial_mar_only = !had_neuraxial & neuraxial_from_mar
   )
@@ -293,24 +297,24 @@ intraop_drug_flags <- intraop_mar_clean |>
       str_to_lower(),
     route_clean = coalesce(mar_route, "") |>
       str_to_lower(),
-    
+
     had_remifentanil_drug = as.integer(
       str_detect(drug_name_clean, "remifentanil")),
-    
+
     had_opioid_drug = as.integer(
       str_detect(drug_name_clean,
                  "morphine|fentanyl|alfentanil|oxycodone") &
         !str_detect(drug_name_clean, "diamorphine") &
         !str_detect(route_clean, "intrathecal")
     ),
-    
+
     had_intrathecal_opioid_drug = as.integer(
       str_detect(drug_name_clean, "diamorphine") |
         (str_detect(drug_name_clean,
                     "morphine|fentanyl|oxycodone") &
            str_detect(route_clean, "intrathecal"))
     ),
-    
+
     had_ketamine_drug  = as.integer(
       str_detect(drug_name_clean, "ketamine")),
     had_clonidine_drug = as.integer(
@@ -361,7 +365,7 @@ cat("\nAdding the predefined exclusion flags...\n")
 # local definition REMOVED, was previously duplicated here.
 
 # ============================================================
-# all_opcs_excluded — FIXED (session finding)
+# all_opcs_excluded — FIXED
 #
 # Previously checked only primary_opcs per operation — the same
 # first-code-only bug found in proc_category's derivation. A row
@@ -541,7 +545,7 @@ cat("computed after Flag 6 — see below)\n")
 # have >1 row) — the OLD admission-level anaesthesia_stop join gave
 # that single record to EVERY episode in the admission regardless of
 # which operation it actually followed, and that logic (in
-# anaesthesia_flags above) is unchanged by tonight's fixes.
+# anaesthesia_flags above) is unchanged by the fixes above.
 #
 # This flag identifies exactly which episodes' anaesthesia_stop is
 # genuinely trustworthy: TRUE for single-operation admissions
@@ -552,7 +556,7 @@ cat("computed after Flag 6 — see below)\n")
 # FALSE otherwise — those episodes' anaesthesia_stop is confirmed
 # borrowed from a DIFFERENT operation.
 #
-# Validated (global, all drugs) prior to tonight's proc_category
+# Validated (global, all drugs) prior to the proc_category
 # fixes: 4,765/5,181 (92.0%) reliable among episodes with any
 # anaesthesia data at all; 416 episodes definitively mis-anchored.
 # Re-check this split on the actual oxycodone S4 population before
@@ -688,9 +692,9 @@ pca_episodes <- pca_episodes |>
       exclude_missing_proc_category
   )
 
-cat("\nAny David exclusion (conservative, FINAL):",
+cat("\nAny Brooks exclusion (conservative, FINAL):",
     sum(pca_episodes$exclude_minor_procedure_any), "\n")
-cat("Any David exclusion (strict/sensitivity, FINAL):",
+cat("Any Brooks exclusion (strict/sensitivity, FINAL):",
     sum(pca_episodes$exclude_minor_procedure_any_strict), "\n")
 
 cat("\nVerification — surgical episodes with NA proc_category NOT\n")
@@ -802,7 +806,7 @@ print(table(pca_episodes$era, pca_episodes$drug))
 # FLAG 8 - Admission type
 #
 # Original admission_type KEPT UNCHANGED below for backward
-# compatibility (SI osteotomy project depends on its exact 4
+# compatibility (a separate analysis depends on its exact 4
 # categories). New fields added alongside:
 #   - is_trauma: standalone flag (trauma can co-occur with any
 #     proc_category, not just orthopaedic — no longer swallowed
@@ -893,29 +897,29 @@ pca_episodes <- pca_episodes |>
   mutate(
     is_trauma = str_detect(coalesce(PFMD_PROC_OPCS_CODES, ""),
                            "^W1[0-9]|^W2[0-9]|^W30"),
-    
+
     medical_specialty_grouped = recode(
       ADMITTING_SPECIALTY, !!!specialty_groups,
       .default = "Other medical/unclassified"
     ),
-    
+
     admission_type_detailed = case_when(
       case_type == "surgical" & !is.na(proc_category) ~ proc_category,
       case_type == "surgical"                          ~ "Surgical (unclassified OPCS)",
       case_type == "medical"                            ~ paste0("Medical: ", medical_specialty_grouped),
       TRUE                                               ~ "Unclassified"
     ),
-    
+
     confirmed_preop_symptomatic = replace_na(confirmed_preop_symptomatic, FALSE),
-    
+
     likely_nonopioid_nausea_confound = medical_specialty_grouped %in%
       c("Oncology", "Haematology/Oncology", "Gastroenterology") |
       admission_type_detailed %in% c("Neurosurgery", "Vascular/lines"),
-    
+
     # FINAL combined flag — use THIS for antiemetic burden analysis
     nonopioid_nausea_confound_final = likely_nonopioid_nausea_confound | confirmed_preop_symptomatic,
-    
-    # ORIGINAL — UNCHANGED, kept for backward compatibility (SI project)
+
+    # ORIGINAL — UNCHANGED, kept for backward compatibility (separate analysis)
     admission_type = case_when(
       str_detect(coalesce(PFMD_PROC_OPCS_CODES, ""),
                  "^W1[0-9]|^W2[0-9]|^W30") ~ "Trauma",
@@ -956,6 +960,12 @@ cat("\nAdding final side-effect classifications...\n")
 # distinguishing pruritus-dose from respiratory-reversal-dose
 # naloxone). It must exist on disk before running this script.
 naloxone_reclassifications <- readRDS("1 - data/3 - processed_data/naloxone_reclassifications.rds")
+missing_cols <- setdiff(c("PAT_ENC_CSN_ID", "ADMIN_TIME", "reclassified_to"),
+                        names(naloxone_reclassifications))
+if (length(missing_cols) > 0) {
+  stop("naloxone_reclassifications.rds is missing column(s): ",
+       paste(missing_cols, collapse = ", "))
+}
 
 non_pca_mar_reclassified <- non_pca_mar_clean |>
   left_join(
@@ -988,13 +998,11 @@ non_pca_mar_reclassified <- non_pca_mar_clean |>
 # was tested against rotation-away rate as an external validation
 # check and showed no natural breakpoint at any threshold tried
 # (25/50/75%/median) — rotation-away rate climbs smoothly and
-# monotonically with burden (6.2% -> 8.4% -> 15.0% -> 21.2% across
-# bands) rather than showing a genuine cliff, so no cutoff is used.
+# monotonically with burden rather than showing a genuine cliff, so no
+# cutoff is used.
 #
-# Reported rate (full cohort, all drugs): 26.2% (n=5,468). By drug:
-# oxycodone 34.1%, morphine 23.6% — an unadjusted difference that
-# should be interpreted alongside the PSM-matched comparison in
-# 10_comparative_PSM.R rather than on its own.
+# The unadjusted rate by drug should be interpreted alongside the
+# PSM-matched comparison in 10_comparative_PSM.R rather than on its own.
 # ============================================================
 #
 # GROUP B — episodes with a real anaesthetic (anaesthesia_stop AND
@@ -1186,7 +1194,7 @@ pca_episodes <- pca_episodes |>
     ),
     any_antipruritic_final      = replace_na(any_antipruritic_final, FALSE),
     any_naloxone_reversal_final = replace_na(any_naloxone_reversal_final, FALSE),
-    
+
     # Composite — Group C's NA correctly propagates through | here
     # too (NA | TRUE = TRUE, NA | FALSE = NA) rather than being
     # silently coerced

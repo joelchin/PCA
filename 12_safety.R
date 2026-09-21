@@ -1,29 +1,33 @@
 # ============================================================
-# 12 — Section 4: Safety Analysis
-# Paediatric PCA Study
-# Addenbrooke's Hospital
+# 12 — Safety analysis
+# Paediatric PCA/NCA study — Addenbrooke's Hospital (CUH NHS FT)
+# Author: J Chin
+# ============================================================
 #
-# Uses the finalised, anaesthesia-stop-anchored side-effect flags
-# from 4_flags.R (Flag 9) throughout:
-#   - reactive_antiemetic_final
-#   - any_antipruritic_final — combines chlorphenamine and
-#     naloxone at the 40mcg pruritus-consistent dose into one flag.
-#     A separate "naloxone pruritus only" breakdown can't be
-#     isolated cleanly from this combined flag; see the limitations
-#     note further down.
-#   - any_side_effect_final
-#   - any_naloxone_reversal_final — reflects manual chart-review
-#     reclassification: several 400mcg-dose events across drugs were
-#     confirmed on review to be itch rather than respiratory
-#     depression, and recoded accordingly.
+# Purpose
+#   Safety outcomes across the cohort: naloxone reversal events, drug switching
+#   (opioid rotation), side-effect rates by drug, age group and era, and the
+#   epidural subgroup.
 #
-# There is no persistent hours-from-anaesthesia-stop column for
-# naloxone reversal timing; where that timing is needed it comes
-# from an ad hoc manual review rather than a reusable derived field.
+# Inputs (in session)
+#   pca_episodes_flagged, episode_metrics, episode_shift_table.
 #
-# Population sizes throughout are computed dynamically (e.g.
-# nrow(all_met)) rather than hardcoded, so reported totals stay in
-# sync with the underlying data as the pipeline is re-run.
+# Definitions
+#   Side effects use the final anaesthesia-stop-anchored flags from 4_flags.R
+#   (Flag 9). Naloxone reversal reflects manual chart-review reclassification:
+#   several 400 mcg-dose events were confirmed to be itch, not respiratory
+#   depression, and were recoded. Population sizes are computed from the data
+#   (nothing is hard-coded).
+#
+# Limitations
+#   - Antipruritic is a combined flag (chlorphenamine + naloxone 40 mcg), so
+#     "naloxone pruritus only" cannot be reported separately.
+#   - Timing of reversal relative to anaesthesia stop is not stored as a
+#     per-episode column.
+#   - Counts, not percentages, are reported for rare events.
+#
+# Output
+#   Console tables only.
 # ============================================================
 
 library(tidyverse)
@@ -40,7 +44,7 @@ stopifnot(
 )
 
 cat("============================================================\n")
-cat("ANALYSIS 7 — SAFETY ANALYSIS (SECTION 4)\n")
+cat("SCRIPT 12 — SAFETY ANALYSIS (SECTION 4)\n")
 cat("Population: ALL episodes, ALL drugs (S4)\n")
 cat("============================================================\n\n")
 
@@ -386,6 +390,7 @@ cat("\n")
 cat("--- Fisher's exact test: reversal rate across age groups (FINAL) ---\n")
 reversal_age_table <- table(age_drug_met$age_group, age_drug_met$any_naloxone_reversal_final)
 print(reversal_age_table)
+set.seed(42)  # Monte Carlo p-value: fixed seed so the result is reproducible
 print(fisher.test(reversal_age_table, simulate.p.value = TRUE, B = 10000))
 cat("\n")
 
@@ -458,7 +463,7 @@ cat("Naloxone reversal (FINAL):",
     sum(epidural_met$any_naloxone_reversal_final, na.rm = TRUE), "\n\n")
 
 cat("============================================================\n")
-cat("ANALYSIS 7 COMPLETE\n")
+cat("SCRIPT 12 COMPLETE\n")
 cat("Key safety finding: naloxone reversal rate by drug and age group\n")
 cat("Report counts not percentages for rare events (n<30)\n")
 cat("Trend analysis: safety outcomes stable across study period\n\n")

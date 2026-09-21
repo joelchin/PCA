@@ -1,10 +1,32 @@
-# 6 — GLOBAL POPULATION CLASSIFICATION
-# Surgical (major OPCS) vs Non-surgical (minor/no OPCS)
 # ============================================================
+# 6 — Population classification (S3 and S4)
+# Paediatric PCA/NCA study — Addenbrooke's Hospital (CUH NHS FT)
+# Author: J Chin
+# ============================================================
+#
+# Purpose
+#   Defines the analysis populations and saves their episode keys.
+#
+#   S4  All oxycodone episodes with a documented stop time, split into
+#       surgical / medical using case_type_refined (defined in 4_flags.R).
+#   S3  Candidate pools for the propensity-matched comparison (morphine and
+#       oxycodone): first-line, first episode of the admission, no concurrent
+#       epidural, surgical (case_type_refined), mode PCA or NCA, and not
+#       excluded by exclude_minor_procedure_any. Children who appear in BOTH
+#       arms through different admissions are excluded from S3 before matching,
+#       to preserve the independence assumption.
+#
+# Inputs (in session)
+#   pca_episodes_flagged, admissions_clean, operations_clean
+#
+# Outputs (1 - data/3 - processed_data/, .rds; keys = PAT_ENC_CSN_ID + episode_id)
+#   s4_medical_keys, s4_surgical_keys, s3_morphine_keys, s3_oxycodone_keys
+# ============================================================
+
 library(tidyverse)
 library(lubridate)
 cat("============================================================\n")
-cat("ANALYSIS 4 — GLOBAL CLASSIFICATION\n")
+cat("SCRIPT 6 — GLOBAL CLASSIFICATION\n")
 cat("============================================================\n\n")
 # Require cleaned data
 stopifnot(exists("pca_episodes_flagged"))
@@ -119,7 +141,7 @@ s3_oxycodone_keys <- pca_episodes_flagged |>
 # CROSS-ARM PATIENT EXCLUSION
 #
 # Found via a repeat-patient/independence check on the matched PSM
-# output: 5 real children appeared in BOTH drug arms (morphine on one
+# output: a small number of children appeared in BOTH drug arms (morphine on one
 # admission, oxycodone on a different, later admission). The existing
 # dedup logic deduplicates EACH drug's pool separately (one episode
 # per patient WITHIN morphine, one per patient WITHIN oxycodone) —
@@ -129,7 +151,7 @@ s3_oxycodone_keys <- pca_episodes_flagged |>
 # genuinely different oxycodone patient. Violates the independence
 # assumption standard matching relies on.
 #
-# Direct decision: exclude these patients from S3 entirely (option 1
+# Decision: exclude these patients from S3 entirely (option 1
 # of three considered — cluster-robust SEs or reporting-as-limitation
 # were the alternatives, not used). Applied here, upstream of
 # matching, so the propensity model itself never sees these
@@ -155,12 +177,12 @@ if (length(cross_arm_patients) > 0) {
     left_join(admissions_clean |> select(PAT_ENC_CSN_ID, PAT_ID), by = "PAT_ENC_CSN_ID") |>
     filter(!(PAT_ID %in% cross_arm_patients)) |>
     select(PAT_ENC_CSN_ID, episode_id)
-  
+
   s3_oxycodone_keys <- s3_oxycodone_keys |>
     left_join(admissions_clean |> select(PAT_ENC_CSN_ID, PAT_ID), by = "PAT_ENC_CSN_ID") |>
     filter(!(PAT_ID %in% cross_arm_patients)) |>
     select(PAT_ENC_CSN_ID, episode_id)
-  
+
   cat("S3 pools after cross-arm exclusion — morphine:", nrow(s3_morphine_keys),
       "| oxycodone:", nrow(s3_oxycodone_keys), "\n")
 }
@@ -191,14 +213,5 @@ cat(sprintf(" Surgical (major OPCS): %d (%.1f%%)\n\n",
 cat("S3 (PSM population, case_type_refined):\n")
 cat(sprintf(" Morphine: n = %d\n", nrow(s3_morphine_keys)))
 cat(sprintf(" Oxycodone: n = %d\n\n", nrow(s3_oxycodone_keys)))
-cat("ACTION NEEDED: side_effect_temporal_profile.R still defines\n")
-cat("its own inline copy of s3_morphine_keys/s3_oxycodone_keys — check\n")
-cat("whether it also needs the case_type -> case_type_refined switch\n")
-cat("applied, or it will silently diverge from this version.\n\n")
-cat("S3/S4 consistently classify\n")
-cat("surgical vs medical using case_type_refined — the opcs_data/\n")
-cat("minor_procedure_opcs path (admission-level, first-operation-only,\n")
-cat("hardcoded duplicate minor-procedure list) is not used\n")
-cat("anywhere in this script. S2 is not part of this pipeline (confirmed\n")
-cat("dead code, see note near top of script).\n\n")
+cat("S3 and S4 classify surgical vs medical using case_type_refined.\n\n")
 cat("============================================================\n")

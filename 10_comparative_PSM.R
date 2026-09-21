@@ -1,107 +1,67 @@
 # ============================================================
-# 10 — Section 3: PSM Comparative Analysis
-# Paediatric PCA Study
-# Addenbrooke's Hospital
+# 10 — Propensity-score matched comparison: oxycodone vs morphine
+# Paediatric PCA/NCA study — Addenbrooke's Hospital (CUH NHS FT)
+# Author: J Chin
+# ============================================================
 #
-# Propensity-matched comparison of oxycodone vs morphine, addressing
-# indication bias in the unadjusted comparison from Section 2.
+# Purpose
+#   Builds the matched cohort (S3 population) and compares oxycodone with
+#   morphine on side effects, efficacy and consumption.
 #
-# Matching covariates
+# Inputs
+#   In session: pca_episodes_flagged, admissions_clean, anaesthesia_ax_clean,
+#     anaesthesia_events_clean, intraop_mar_clean, episode_metrics,
+#     s3_morphine_keys, s3_oxycodone_keys.
+#   Files: episode_dose.rds (7_dosing.R), episode_true_total_dose.rds
+#     (8_true_total_dose.R). Dose sections are skipped with a message if absent.
 #
-#   The matching formula includes ASA grade as a pre-treatment
-#   covariate. This population (S3) is 100% surgical by construction,
-#   so ASA grade needs no "not applicable" coding for medical
-#   patients the way it would in the full S4 cohort. It's sourced
-#   from anaesthesia_ax_clean (built in 2_cleaningscript.R, Section
-#   7B) and joined by PAT_ENC_CSN_ID.
+# Outputs
+#   Files (1 - data/3 - processed_data/): psm_matched_keys.rds (matched pairs; keys =
+#   PAT_ENC_CSN_ID + episode_id); psm_data.rds (pre-match eligible pool) and
+#   matched_data.rds, which 15 and 16 read if the objects are not already in the
+#   session; paired_effect_estimates.rds (aggregate results only).
+#   In session: psm_data, matched_data, match_out.
 #
-#   Procedure urgency is deliberately not included as a covariate.
-#   Coverage is too sparse (~17.6% of assessment-SDE rows, and
-#   declining over the dataset's history) to support inclusion in a
-#   matching formula, so it's retained only as a descriptive field.
+# Population construction
+#   S3 pools (6_cohort_classification.R) -> exclude neonates -> one episode per
+#   patient within each arm (earliest episode kept, before matching) -> drop
+#   GENDER == "Not specified" (a data-entry gap that caused separation in the
+#   propensity model).
 #
-#   ADMITTING_SPECIALTY (28 levels) is collapsed to specialty_collapsed
-#   (9 levels): apparent same-service adult/paediatric label pairs are
-#   merged, and remaining specialties with n<30 are grouped into
-#   "Other specialty". This avoids a sparse-cell problem against
-#   proc_category that would otherwise risk unstable or extreme
-#   propensity scores.
+# Matching
+#   1:1 nearest-neighbour without replacement on the logit of a logistic
+#   propensity score, caliper 0.2 SD of the logit (MatchIt; set.seed(42)).
+#   Covariates: AGE, WEIGHT_KG, GENDER, proc_category ("Other" merged into
+#   "Unclassified"), mode, had_peripheral, year, specialty_collapsed (services
+#   with fewer than SPECIALTY_VOLUME_THRESHOLD episodes pooled as "Other
+#   specialty"), asa_grade, intraoperative exposures (remifentanil, ketamine,
+#   clonidine, intrathecal neuraxial, paracetamol, NSAID, magnesium, fentanyl,
+#   morphine, oxycodone, diamorphine) and anaesthesia_duration_mins.
+#   Missing asa_grade is imputed with the modal grade and missing anaesthesia
+#   duration with the median; the amount imputed is printed at run time.
+#   Procedure urgency is not used (too sparsely recorded). Balance is assessed
+#   with standardised mean differences (< 0.1 taken as good balance).
 #
-#   Intraoperative covariates (had_remifentanil/ketamine/clonidine/
-#   magnesium/nsaid/paracetamol/fentanyl/morphine/oxycodone/
-#   diamorphine) are included based on pre-match imbalance checks:
-#   several show large imbalances between drug groups (up to +41.6pp,
-#   p<2e-16), consistent with confounding by indication rather than
-#   purely theoretical justification. had_intraop_alfentanil is the
-#   one exception, excluded for showing no imbalance (+0.7pp, p=0.41).
-#
-#   GENDER == "Not specified" (a data-entry gap) and
-#   proc_category == "Other" (collapsed into "Unclassified") are
-#   dropped/regrouped as near-zero-variance levels that otherwise
-#   produce separation in the propensity model (standard errors in
-#   the hundreds for both).
-#
-#   A drug x era interaction term on the primary outcome is not
-#   significant (p=0.55), so era is not treated as an effect modifier
-#   and the pooled model with year as a covariate is used throughout.
-#
-# Side-effect outcome definitions
-#
-#   Side-effect outcomes (composite, reactive antiemetic,
-#   antipruritic, naloxone reversal) use the same
-#   anaesthesia-stop-anchored definitions as global (S4) reporting in
-#   4_flags.R (Flag 9), computed once there and read directly from
-#   pca_episodes_flagged rather than recomputed independently in this
-#   script:
-#     - Naloxone reversal: minimal/no cutoff — true reversal events
-#       sit well outside any plausible washout window
-#     - Antipruritic: no time filter (chlorphenamine + naloxone at
-#       the 40mcg pruritus-consistent dose) — sensitivity-curve
-#       testing found no natural break anywhere in the 0-48h range,
-#       consistent with itch tracking cumulative opioid exposure
-#       rather than a clearable perioperative confound
-#     - Reactive antiemetic: >12h post-anaesthesia-stop (not episode
-#       start, to separate the general anaesthetic/volatile agent
-#       effect from the postoperative opioid-PCA effect), excluding
-#       nonopioid_nausea_confound_final (a patient-level flag
-#       combining specialty/OPCS-category risk with confirmed
-#       pre-op symptomatic status — see 4_flags.R Flag 8/9). No
-#       burden-percentage threshold is applied: a discretisation
-#       cliff at exactly 50% burden affects around 8% of episodes in
-#       both directions, and high burden is more consistent with a
-#       probable non-opioid cause than a persistent opioid-
-#       attributable pattern once checked against known confounds.
-#
-#   Since S3 is 100% surgical, every episode here follows the
-#   "surgical" branch of each rule; the medical-episode logic that
-#   applies in S4/global reporting is not relevant in this script.
-#   any_laxative uses no time filter, consistent with the rest of the
-#   project.
-#
-# Age-stratified / peak-pain diagnostics
-#
-#   The exploratory diagnostic sections further down in this script
-#   read peak_pain_score and time_weighted_mean_pain directly from
-#   pca_episodes_flagged (computed once in 4_flags.R) rather than
-#   recomputing a separate per-episode median pain score, so there is
-#   one pain-score methodology in use across the project rather than
-#   two independently-derived ones.
-#
-# Population:
-#   Pre-match: morphine n=1,718 / oxycodone n=433
-#   (First line, first episode, no concurrent epidural,
-#    surgical only, the predefined exclusion set applied)
-#
-# Method:
-#   Nearest neighbour 1:1 matching
-#   Caliper: 0.2 SD of logit propensity score
-#   Package: MatchIt
-#
+# Outcomes
+#   - Side effects: reactive antiemetic, antipruritic, naloxone reversal and the
+#     composite are read from pca_episodes_flagged (4_flags.R, Flag 9); they are
+#     not recomputed here.
+#   - Efficacy: peak and time-weighted mean pain score (4_flags.R).
+#   - Consumption: background dose (episode_dose.rds) and background + bolus
+#     dose (episode_true_total_dose.rds; flowsheet subset only).
+#   Comparisons in the matched sample use chi-squared (categorical) and Wilcoxon
+#   rank-sum (continuous) tests (safe_chisq() in utils_stats.R reports, rather than
+#   hides, small-count warnings). A final section adds paired effect estimates with
+#   95% CIs that use the matching: paired risk difference, matched-pairs odds ratio
+#   and exact McNemar test for binary outcomes; Hodges-Lehmann difference and
+#   signed-rank test for pain scores and episode duration. No equivalence margin
+#   was pre-specified, so these describe effect size and precision only.
 # ============================================================
 
 library(tidyverse)
 library(lubridate)
 library(MatchIt)
+source("utils_stats.R")   # safe_chisq(), paired_binary(), paired_continuous()
 
 # ============================================================
 # LOAD DATA
@@ -117,14 +77,8 @@ stopifnot(
 )
 
 cat("============================================================\n")
-cat("ANALYSIS 6 — PSM COMPARATIVE ANALYSIS (SECTION 3)\n")
+cat("SCRIPT 10 — PSM COMPARATIVE ANALYSIS (SECTION 3)\n")
 cat("============================================================\n\n")
-
-cat("Not sourcing 9_comsumption.R here — it requires\n")
-cat("matched_outcomes, which doesn't exist until much later in this\n")
-cat("script (that would be a circular dependency). Not needed anyway:\n")
-cat("the Dose Outcomes section below reads episode_true_total_dose.rds\n")
-cat("/ episode_dose.rds directly.\n\n")
 
 fmt_med_iqr <- function(x, digits = 1) {
   x <- x[!is.na(x)]
@@ -166,10 +120,10 @@ if ("age_group" %in% names(morphine_pool)) {
   n_neo_oxy <- sum(oxycodone_pool$age_group == "Neonate (<28 days)", na.rm = TRUE)
   cat("--- Excluding neonates ---\n")
   cat("Neonates found: morphine =", n_neo_mor, "| oxycodone =", n_neo_oxy, "\n")
-  
+
   morphine_pool  <- morphine_pool  |> filter(age_group != "Neonate (<28 days)")
   oxycodone_pool <- oxycodone_pool |> filter(age_group != "Neonate (<28 days)")
-  
+
   cat("Post-exclusion: morphine n =", nrow(morphine_pool),
       "| oxycodone n =", nrow(oxycodone_pool), "\n\n")
 } else {
@@ -188,9 +142,9 @@ if ("age_group" %in% names(morphine_pool)) {
 # contribute two rows to the same drug's matching pool, effectively
 # double-counting their outcome and inflating apparent significance
 # for continuous outcomes especially (their consistent dose/pain
-# tendency counted twice) — the same mechanism that made peak pain
-# score a clustering artefact in the old, undeduplicated version of
-# this analysis (p=0.046 -> p=0.475 once checked).
+# tendency counted twice) — the same mechanism that made the peak pain
+# comparison a clustering artefact in an earlier, undeduplicated version
+# of this analysis.
 #
 # Fix: deduplicate each drug's pool to ONE episode per true patient
 # (PAT_ID), keeping the earliest episode — BEFORE matching runs, so
@@ -315,7 +269,7 @@ psm_data <- psm_data |>
 cat("New intraop flags added: had_intraop_paracetamol, had_intraop_nsaid,\n")
 cat("  had_intraop_magnesium, had_intraop_fentanyl, had_intraop_morphine,\n")
 cat("  had_intraop_oxycodone2, had_intraop_diamorphine\n")
-cat("(had_intraop_alfentanil excluded — no imbalance signal, p=0.41)\n\n")
+cat("(had_intraop_alfentanil excluded — no imbalance signal)\n\n")
 
 # ============================================================
 # ADD anaesthesia_duration_mins
@@ -374,11 +328,11 @@ cat("asa_grade missing:", n_missing_asa, "/", nrow(psm_data),
     sprintf("(%.1f%%)\n", 100 * n_missing_asa / nrow(psm_data)))
 
 if (n_missing_asa > 0) {
-  cat("Non-zero missingness in asa_grade for a 100%% surgical\n")
+  cat("Non-zero missingness in asa_grade for a 100% surgical\n")
   cat("population is unexpected — worth checking whether this reflects\n")
   cat("genuine documentation gaps or a linkage problem before imputing.\n")
   cat("Using mode imputation (most common grade) as a placeholder —\n")
-  cat("revisit if missingness is substantial (>5%%).\n\n")
+  cat("revisit if missingness is substantial (>5%).\n\n")
   asa_mode <- names(sort(table(psm_data$asa_grade), decreasing = TRUE))[1]
   psm_data <- psm_data |>
     mutate(asa_grade = if_else(is.na(asa_grade), asa_mode, asa_grade))
@@ -572,18 +526,18 @@ match_diag_expanded <- tryCatch(
 if (!is.null(match_diag_previous) && !is.null(match_diag_expanded)) {
   n_prev <- sum(match_diag_previous$weights == 1) / 2
   n_exp  <- sum(match_diag_expanded$weights == 1) / 2
-  
+
   smd_prev <- summary(match_diag_previous, standardize = TRUE)$sum.matched
   smd_exp  <- summary(match_diag_expanded, standardize = TRUE)$sum.matched
   max_smd_prev <- max(abs(smd_prev[, "Std. Mean Diff."]), na.rm = TRUE)
   max_smd_exp  <- max(abs(smd_exp[, "Std. Mean Diff."]), na.rm = TRUE)
-  
+
   cat(sprintf("Matched pairs — PREVIOUS: %d | EXPANDED: %d\n", n_prev, n_exp))
   cat(sprintf("Max |SMD| post-match — PREVIOUS: %.3f | EXPANDED: %.3f\n", max_smd_prev, max_smd_exp))
   cat("(Target <0.1 for every covariate — check full tables if either exceeds this)\n\n")
   cat("--- Full balance table, PREVIOUS ---\n"); print(smd_prev)
   cat("\n--- Full balance table, EXPANDED ---\n"); print(smd_exp)
-  
+
   cat("\n--- Balance on asa_grade specifically (EXPANDED match only) ---\n")
   asa_rows <- grep("asa_grade", rownames(smd_exp), value = TRUE)
   if (length(asa_rows) > 0) {
@@ -647,6 +601,11 @@ matched_keys <- matched_data |>
 
 saveRDS(matched_keys, "1 - data/3 - processed_data/psm_matched_keys.rds")
 cat("Matched keys saved to psm_matched_keys.rds\n\n")
+
+# The pre-match pool and matched data are saved so that 15 and 16 can be run in a
+# later R session without re-running this script.
+saveRDS(psm_data, "1 - data/3 - processed_data/psm_data.rds")
+saveRDS(matched_data, "1 - data/3 - processed_data/matched_data.rds")
 
 # ============================================================
 # POST-MATCH BALANCE TABLE
@@ -762,7 +721,7 @@ for (var in c("any_side_effect_final", "reactive_antiemetic_final",
     cat(sprintf("%-30s — insufficient variation\n", var))
     next
   }
-  ct  <- suppressWarnings(chisq.test(tab))
+  ct  <- safe_chisq(tab)
   or  <- (tab["oxycodone", 2] / tab["oxycodone", 1]) /
     (tab["morphine",  2] / tab["morphine",  1])
   cat(sprintf("%-30s OR=%.2f  p=%.4f\n", var, or, ct$p.value))
@@ -828,7 +787,7 @@ pain_matched |>
 cat("\n")
 
 cat("NOTE ON THE ABOVE (% shifts severe, >=7 Serlin cutpoint):\n")
-cat("This threshold is the SI (osteotomy) project's core\n")
+cat("This threshold comes from a separate service-improvement project, where it is the core\n")
 cat("stratification variable, not independently validated as a drug-\n")
 cat("comparison efficacy endpoint for this analysis. Retained above for\n")
 cat("continuity, but the peak/time-weighted pain score section below\n")
@@ -880,7 +839,7 @@ print(episode_pain_summary |> group_by(drug) |>
                   .groups = "drop"))
 
 wt_peak          <- wilcox.test(peak_pain_score ~ drug, data = episode_pain_summary)
-wt_time_weighted <- suppressWarnings(wilcox.test(time_weighted_mean_pain ~ drug, data = episode_pain_summary))
+wt_time_weighted <- wilcox.test(time_weighted_mean_pain ~ drug, data = episode_pain_summary, exact = FALSE)
 cat("\nWilcoxon peak score p =          ", format.pval(wt_peak$p.value, digits = 3), "\n")
 cat("Wilcoxon time-weighted mean p =  ", format.pval(wt_time_weighted$p.value, digits = 3), "\n\n")
 
@@ -918,7 +877,7 @@ for (var in c("any_side_effect_final", "reactive_antiemetic_final",
     cat(sprintf("%-35s — insufficient variation\n", var))
     next
   }
-  ct <- tryCatch(suppressWarnings(chisq.test(tab)), error = function(e) NULL)
+  ct <- tryCatch(safe_chisq(tab), error = function(e) NULL)
   if (is.null(ct)) next
   or <- (tab["oxycodone", 2] / tab["oxycodone", 1]) /
     (tab["morphine",  2] / tab["morphine",  1])
@@ -977,11 +936,11 @@ episode_dose <- tryCatch(
 )
 
 if (!is.null(episode_true_total_dose)) {
-  
+
   matched_total_dose <- episode_true_total_dose |>
     semi_join(matched_keys, by = c("PAT_ENC_CSN_ID", "episode_id")) |>
     filter(drug %in% c("morphine", "oxycodone"))
-  
+
   linkage_by_drug <- matched_keys |>
     select(PAT_ENC_CSN_ID, episode_id, drug) |>
     left_join(
@@ -989,47 +948,47 @@ if (!is.null(episode_true_total_dose)) {
       by = c("PAT_ENC_CSN_ID", "episode_id")
     ) |>
     mutate(is_linked = replace_na(is_linked, FALSE))
-  
+
   cat("--- Flowsheet linkage rate by drug (this matched population) ---\n")
   print(linkage_by_drug |> group_by(drug) |>
           summarise(n = n(), n_linked = sum(is_linked),
                     pct_linked = round(100*mean(is_linked), 1), .groups = "drop"))
-  link_test <- suppressWarnings(chisq.test(table(linkage_by_drug$drug, linkage_by_drug$is_linked)))
+  link_test <- safe_chisq(table(linkage_by_drug$drug, linkage_by_drug$is_linked))
   cat("Chi-squared (linkage x drug) p =", format.pval(link_test$p.value, digits = 3), "\n")
   cat("(Non-random linkage confirmed separately not to change the conclusion —\n")
   cat(" see ipw_correction_total_dose.R for the full sensitivity check.)\n\n")
-  
+
   cat(sprintf("Matched episodes with bolus-inclusive dose data: %d / %d (%.1f%%)\n\n",
               nrow(matched_total_dose), nrow(matched_keys),
               100*nrow(matched_total_dose)/nrow(matched_keys)))
-  
+
   cat("--- PRIMARY: Total dose (background + bolus), mcg/kg/hr ---\n")
   total_dose_summary <- matched_total_dose |>
     group_by(drug) |>
     summarise(n = n(), total_dose = fmt_med_iqr(total_dose_mcg_kg_hr, 2), .groups = "drop")
   print(total_dose_summary)
-  
+
   wt_total <- wilcox.test(total_dose_mcg_kg_hr ~ drug, data = matched_total_dose)
   cat("Wilcoxon (TOTAL dose) p =", format.pval(wt_total$p.value, digits = 3), "\n\n")
-  
+
   cat("--- SECONDARY/REFERENCE: Background only, SAME linked subset ---\n")
   bg_summary <- matched_total_dose |>
     group_by(drug) |>
     summarise(n = n(), background = fmt_med_iqr(background_mcg_kg_hr, 2), .groups = "drop")
   print(bg_summary)
-  
+
   wt_bg <- wilcox.test(background_mcg_kg_hr ~ drug, data = matched_total_dose)
   cat("Wilcoxon (background only, same subset) p =", format.pval(wt_bg$p.value, digits = 3), "\n\n")
-  
+
   cat("--- Bolus as % of total dose, by drug ---\n")
   bolus_pct_summary <- matched_total_dose |>
     group_by(drug) |>
     summarise(n = n(), bolus_pct = fmt_med_iqr(bolus_pct_of_total, 1), .groups = "drop")
   print(bolus_pct_summary)
-  
+
   wt_bolus <- wilcox.test(bolus_pct_of_total ~ drug, data = matched_total_dose)
   cat("Wilcoxon (bolus % of total) p =", format.pval(wt_bolus$p.value, digits = 3), "\n\n")
-  
+
 } else {
   cat("Bolus-inclusive dose outcomes skipped — run 8_true_total_dose.R first\n\n")
   matched_total_dose <- NULL
@@ -1039,22 +998,65 @@ if (!is.null(episode_dose)) {
   matched_loading <- episode_dose |>
     semi_join(matched_keys, by = c("PAT_ENC_CSN_ID", "episode_id")) |>
     filter(drug %in% c("morphine", "oxycodone"))
-  
+
   cat("--- Loading dose prescribed, n (%) [from episode_dose.rds] ---\n")
   load_summary <- matched_loading |>
     group_by(drug) |>
     summarise(n = n(), pct_loading = round(100 * mean(had_loading_dose, na.rm = TRUE), 1), .groups = "drop")
   print(load_summary)
-  
+
   load_tab <- table(matched_loading$drug, matched_loading$had_loading_dose)
   if (ncol(load_tab) == 2) {
-    ct <- suppressWarnings(chisq.test(load_tab))
+    ct <- safe_chisq(load_tab)
     cat("had_loading_dose p =", format.pval(ct$p.value, digits = 3), "\n")
   }
   cat("\n")
 } else {
   matched_loading <- NULL
 }
+
+# ============================================================
+# PAIRED EFFECT ESTIMATES (matched pairs, 95% CIs)
+# ============================================================
+# The tests above compare the two matched samples as if they were independent.
+# These estimates use the pairing: each oxycodone episode is compared with its
+# matched morphine episode (helpers in utils_stats.R).
+#   Binary outcomes:     paired risk difference (Newcombe-Wilson CI), matched-pairs
+#                        odds ratio (exact CI) and exact McNemar test.
+#   Continuous outcomes: Hodges-Lehmann median paired difference (CI) and
+#                        Wilcoxon signed-rank test.
+# No equivalence margin was pre-specified, so these describe the size and precision
+# of any difference; they do not test equivalence.
+
+cat("============================================================\n")
+cat("PAIRED EFFECT ESTIMATES (matched pairs, oxycodone minus morphine)\n")
+cat("============================================================\n\n")
+
+paired_binary_results <- do.call(rbind, lapply(
+  c("any_side_effect_final", "reactive_antiemetic_final",
+    "any_antipruritic_final", "any_naloxone_reversal_final"),
+  function(v) paired_binary(matched_outcomes, v)
+))
+cat("--- Binary outcomes ---\n")
+print_paired_binary(paired_binary_results)
+cat("\n")
+
+pain_pairs <- episode_pain_summary |>
+  left_join(matched_data |> select(PAT_ENC_CSN_ID, episode_id, treated, subclass),
+            by = c("PAT_ENC_CSN_ID", "episode_id"))
+
+paired_continuous_results <- rbind(
+  paired_continuous(pain_pairs, "peak_pain_score"),
+  paired_continuous(pain_pairs, "time_weighted_mean_pain"),
+  paired_continuous(matched_outcomes, "episode_duration_hrs")
+)
+cat("--- Continuous outcomes ---\n")
+print_paired_continuous(paired_continuous_results)
+cat("\n")
+
+saveRDS(list(binary = paired_binary_results, continuous = paired_continuous_results),
+        "1 - data/3 - processed_data/paired_effect_estimates.rds")
+cat("Paired estimates saved: paired_effect_estimates.rds (aggregate results only)\n\n")
 
 # ============================================================
 # SUMMARY TABLE FOR MANUSCRIPT
@@ -1103,17 +1105,17 @@ print_row("Laxative — n (%)",
 if (exists("episode_pain_summary")) {
   mor_pain <- episode_pain_summary |> filter(drug == "morphine")
   oxy_pain <- episode_pain_summary |> filter(drug == "oxycodone")
-  
+
   print_row("Peak pain score, median (IQR) [primary]",
             fmt_med_iqr(mor_pain$peak_pain_score),
             fmt_med_iqr(oxy_pain$peak_pain_score))
-  
+
   print_row("Time-weighted mean pain score, median (IQR)",
             fmt_med_iqr(mor_pain$time_weighted_mean_pain),
             fmt_med_iqr(oxy_pain$time_weighted_mean_pain))
 }
 
-print_row("  (secondary, SI-derived cutpoint) % shifts severe pain",
+print_row("  (secondary, externally derived cutpoint) % shifts severe pain",
           fmt_med_iqr(mor$pct_shifts_severe),
           fmt_med_iqr(oxy$pct_shifts_severe))
 
@@ -1136,12 +1138,12 @@ print_row("% shifts NSAID, median (IQR)",
 if (!is.null(matched_total_dose)) {
   mor_total <- matched_total_dose |> filter(drug == "morphine")
   oxy_total <- matched_total_dose |> filter(drug == "oxycodone")
-  
+
   print_row(sprintf("Total dose (mcg/kg/hr), median (IQR) [n=%d/%d linked]",
                     nrow(mor_total), nrow(oxy_total)),
             fmt_med_iqr(mor_total$total_dose_mcg_kg_hr, 2),
             fmt_med_iqr(oxy_total$total_dose_mcg_kg_hr, 2))
-  
+
   print_row("  (reference) Background only, same subset",
             fmt_med_iqr(mor_total$background_mcg_kg_hr, 2),
             fmt_med_iqr(oxy_total$background_mcg_kg_hr, 2))
@@ -1151,11 +1153,9 @@ if (!is.null(matched_total_dose)) {
 
 cat("\n")
 cat("============================================================\n")
-cat("ANALYSIS 6 COMPLETE\n")
+cat("SCRIPT 10 COMPLETE\n")
 cat("Matched keys saved: psm_matched_keys.rds\n")
 cat("Side-effect outcomes use anaesthesia-stop-anchored definitions,\n")
 cat("shared with global/S4 reporting (4_flags.R Flag 9) — NOT the old\n")
-cat("shift-count-based definitions. Compare this run's primary outcome\n")
-cat("against the old locked OR 1.12 (p=0.58) explicitly rather than\n")
-cat("assuming the conclusion carries over unchanged.\n")
+cat("shift-count-based definitions.\n")
 cat("============================================================\n")

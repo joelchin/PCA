@@ -1,22 +1,58 @@
 # ============================================================
-# 1 — LOAD RAW DATA
+# 1 — Load raw EPIC extracts
+# Paediatric PCA/NCA study — Addenbrooke's Hospital (CUH NHS FT)
+# Author: J Chin
+# ============================================================
 #
-# Reads the raw EPIC extract (one Excel file per data category, plus
-# a three-sheet workbook for line/drain/airway - LDA - data) and does
-# the minimal tidying needed before cleaning proper starts in
-# 2_cleaningscript.R.
+# Purpose
+#   Reads every raw EPIC export (July 2026 refresh) into the R session.
+#   Nothing is cleaned or saved here; cleaning is done in 2_cleaningscript.R.
 #
-# Two aspects of the extract's structure are handled explicitly here:
-#   - LDAs arrive as a single workbook with three sheets (urethral
-#     catheters, epidural catheters, epidural catheter assessments),
-#     read separately by sheet name rather than as one flat table.
-#   - Pain AVPU is one combined feed containing both pain scores and
-#     NEWS2/MEOWS ACVPU readings, distinguished by a score_type
-#     column. It arrives in two parts, which are combined and then
-#     split into pain_scores and avpu_scores below.
+# Inputs
+#   Excel files named "Chin Paeds PCA Datasets - <category> - refresh
+#   2026-07-15.xlsx" in the project root. To load a newer refresh, change
+#   `file_suffix` below (this is the only place the refresh date is set).
+#
+# Objects created
+#   admissions, anaesthesia_events, anaesthesia_ax_sdes, intraop_mar,
+#   nerve_blocks, non_pca_mar, operations, pca_mar, pca_flowsheets,
+#   problem_list, lda_urethral, lda_epidural, lda_epidural_assess,
+#   pain_avpu (combined), pain_scores, avpu_scores
+#
+# Format notes for this refresh
+#   - LDAs is one workbook with three sheets (urethral catheters, epidural
+#     catheters, epidural catheter assessments), read as three objects.
+#   - Pain/AVPU is two workbooks ("pt 1", "pt 2"), stacked and then split by
+#     score_type into pain scores and ACVPU scores.
+#   - "Anaesthesia Ax SDEs" is a category that first appears in the July 2026
+#     refresh.
+#
+# Working directory
+#   Run from the project root (the folder that contains "1 - data/"), or set the
+#   environment variable PCA_PROJECT_DIR (e.g. in ~/.Renviron) to that folder.
+#   No path is hard-coded in the scripts.
 # ============================================================
 
-setwd("x")
+# ---- Project root ----------------------------------------------------------
+# Run from the project root (the folder containing "1 - data/"), or set the
+# environment variable PCA_PROJECT_DIR (e.g. in ~/.Renviron). No path is hard-coded.
+proj_dir <- Sys.getenv("PCA_PROJECT_DIR", unset = "")
+if (nzchar(proj_dir)) setwd(proj_dir)
+if (!dir.exists("1 - data")) {
+  stop("Project root not found. Set the working directory (or PCA_PROJECT_DIR) ",
+       "to the folder that contains '1 - data/'.")
+}
+
+# ---- Packages (installed once, outside the pipeline) ----------------------
+required_pkgs <- c("tidyverse", "lubridate", "readxl", "furrr", "future",
+                   "tictoc", "MatchIt", "logistf", "gtsummary", "flextable",
+                   "officer", "labelled")
+missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace,
+                                      logical(1), quietly = TRUE)]
+if (length(missing_pkgs) > 0) {
+  stop("Install the missing packages first: install.packages(c(",
+       paste0('"', missing_pkgs, '"', collapse = ", "), "))")
+}
 
 library(tidyverse)
 library(lubridate)

@@ -1,26 +1,33 @@
 # ============================================================
-# 13 — Section 5: Subgroup Analyses
-# Paediatric PCA Study
-# Addenbrooke's Hospital
+# 13 — Subgroup analyses (matched pairs)
+# Paediatric PCA/NCA study — Addenbrooke's Hospital (CUH NHS FT)
+# Author: J Chin
+# ============================================================
 #
-# Uses the finalised, anaesthesia-stop-anchored side-effect flags
-# from 4_flags.R (Flag 9) throughout: any_side_effect_final,
-# reactive_antiemetic_final, any_antipruritic_final,
-# any_naloxone_reversal_final.
+# Purpose
+#   Repeats the matched comparison within pre-defined subgroups: age group,
+#   mode (PCA vs NCA), procedure category, era, first-line vs rotation,
+#   peripheral nerve block, intraoperative spinal; laxative rates are
+#   descriptive only. Subgroups with fewer than 5 episodes in either arm are
+#   not analysed.
 #
-# any_laxative_full is used rather than any_laxative: the two are
-# genuinely different columns in episode_metrics (1200 vs 1147
-# events, only 5321/5374 episodes agree). any_laxative_full is the
-# true full-episode, no-time-filter flag; what any_laxative (plain)
-# represents is unclear and is not a substitute for it.
+# Inputs
+#   File: psm_matched_keys.rds. It must come from a fresh run of
+#   10_comparative_PSM.R (the current flags and outcome definitions).
+#   In session: pca_episodes_flagged, episode_metrics.
 #
-# matched_keys should be re-derived from a fresh run of
-# 10_comparative_PSM.R before this script is trusted, so the
-# antiemetic definition it relies on is current.
+# Definitions
+#   Outcomes are the final Flag 9 flags from 4_flags.R. any_laxative_full is a
+#   different column from any_laxative in episode_metrics; any_laxative_full is
+#   the true full-episode, no-time-filter flag and is the one used here.
+#
+# Output
+#   Console tables; forest_plot_data.rds.
 # ============================================================
 
 library(tidyverse)
 library(lubridate)
+source("utils_stats.R")   # safe_chisq(), paired_binary(), paired_continuous()
 
 # ============================================================
 # LOAD DATA
@@ -39,7 +46,7 @@ matched_keys <- tryCatch(
 )
 
 cat("============================================================\n")
-cat("ANALYSIS 8 — SUBGROUP ANALYSES (SECTION 5)\n")
+cat("SCRIPT 13 — SUBGROUP ANALYSES (SECTION 5)\n")
 cat("Population: PSM matched pairs from 10_comparative_PSM.R\n")
 cat("============================================================\n\n")
 
@@ -92,21 +99,21 @@ cat("Morphine: ", sum(matched_data$drug == "morphine"), "\n\n")
 # ============================================================
 
 subgroup_compare <- function(data, subgroup_var, label) {
-  
+
   cat(sprintf("--- %s ---\n", label))
-  
+
   levels <- unique(data[[subgroup_var]])
   levels <- levels[!is.na(levels)]
-  
+
   results <- map_dfr(levels, function(lv) {
     sub <- data |> filter(.data[[subgroup_var]] == lv)
-    
+
     mor <- sub |> filter(drug == "morphine")
     oxy <- sub |> filter(drug == "oxycodone")
-    
+
     n_mor <- nrow(mor)
     n_oxy <- nrow(oxy)
-    
+
     if (n_mor < 5 || n_oxy < 5) {
       return(tibble(
         subgroup      = as.character(lv),
@@ -119,12 +126,12 @@ subgroup_compare <- function(data, subgroup_var, label) {
         note          = "insufficient n"
       ))
     }
-    
+
     pct_mor <- round(100 * mean(mor$any_side_effect_final, na.rm = TRUE), 1)
     pct_oxy <- round(100 * mean(oxy$any_side_effect_final, na.rm = TRUE), 1)
-    
+
     tab <- table(sub$drug, sub$any_side_effect_final)
-    
+
     if (ncol(tab) < 2) {
       return(tibble(
         subgroup    = as.character(lv),
@@ -137,14 +144,14 @@ subgroup_compare <- function(data, subgroup_var, label) {
         note        = "no variation"
       ))
     }
-    
-    ct <- tryCatch(suppressWarnings(chisq.test(tab)), error = function(e) NULL)
+
+    ct <- tryCatch(safe_chisq(tab), error = function(e) NULL)
     or <- tryCatch(
       (tab["oxycodone", 2] / tab["oxycodone", 1]) /
         (tab["morphine",  2] / tab["morphine",  1]),
       error = function(e) NA_real_
     )
-    
+
     tibble(
       subgroup    = as.character(lv),
       n_morphine  = n_mor,
@@ -156,7 +163,7 @@ subgroup_compare <- function(data, subgroup_var, label) {
       note        = ""
     )
   })
-  
+
   print(results)
   cat("\n")
   invisible(results)
@@ -341,7 +348,7 @@ cat("============================================================\n\n")
 get_or_ci <- function(data, subgroup_label) {
   tab <- table(data$drug, data$any_side_effect_final)
   if (ncol(tab) < 2 || any(tab == 0)) return(NULL)
-  ct <- tryCatch(suppressWarnings(chisq.test(tab)), error = function(e) NULL)
+  ct <- tryCatch(safe_chisq(tab), error = function(e) NULL)
   if (is.null(ct)) return(NULL)
   or <- (tab["oxycodone", 2] / tab["oxycodone", 1]) /
     (tab["morphine",  2] / tab["morphine",  1])
@@ -384,7 +391,7 @@ saveRDS(forest_data, "1 - data/3 - processed_data/forest_plot_data.rds")
 cat("Forest plot data saved\n\n")
 
 cat("============================================================\n")
-cat("ANALYSIS 8 COMPLETE\n")
+cat("SCRIPT 13 COMPLETE\n")
 cat("Pre-specified subgroup analyses complete (FINAL definitions)\n")
 cat("Forest plot data saved for Figure 2\n")
 cat("Note: subgroup analyses hypothesis-generating only\n")

@@ -1,43 +1,53 @@
 # ============================================================
-# 3 — Build Master Shift-Level Analysis Table
-# Paediatric PCA Study
-# Addenbrooke's Hospital
+# 3 — Episode-by-shift table and episode-level metrics
+# Paediatric PCA/NCA study — Addenbrooke's Hospital (CUH NHS FT)
+# Author: J Chin
 # ============================================================
 #
-# Purpose:
-# Builds two master tables used by all downstream analysis scripts:
+# Purpose
+#   Expands each PCA/NCA episode into one row per 12-hour shift and derives
+#   episode-level summaries (pain, analgesic and side-effect markers by shift,
+#   demographics).
 #
-# 1. episode_shift_table.rds
-#    One row per 12-hour shift per active PCA episode
-#    Used for: temporal analyses, side effect attribution,
-#              pain score sequencing
+# Inputs (files, 1 - data/3 - processed_data/)
+#   admissions_clean, pca_episodes, non_pca_mar_clean, pain_scores_clean,
+#   operations_clean, anaesthesia_events_clean, 1_shifts.
 #
-# 2. episode_metrics.rds
-#    One row per episode — derived outcome summaries
-#    Used for: main comparisons, PSM, subgroup analyses
+# Outputs (.rds)
+#   episode_shift_table  one row per shift per active episode
+#                        (temporal analyses, pain sequencing)
+#   episode_metrics      one row per episode (derived summaries)
+#   Also reads drug_lists.R, only to check its antiemetic list against the one used here.
 #
-# Side effect window rationale:
-# Primary analysis uses shift 2 onwards — excludes shift 1
-# which reflects prophylactic prescribing at induction
-# rather than treatment of established opioid side effects.
-# Full episode and shift-1-only versions retained for
-# sensitivity analysis and to demonstrate prophylaxis effect.
-# No fixed time window used — episode-based attribution is
-# more appropriate for PCA-induced side effects which persist
-# throughout the episode regardless of duration.
-#
-# Pipeline order:
-# 1. source("1_load_raw_data.R")
-# 2. source("2_cleaningscript.R")
-# 3. source("3_shift_table.R")   <- this script
-# 4. source("4_flags.R")
-# 5. source("5_load_clean_data.R")
-#
-# Runtime: ~10 minutes
+# Notes
+#   - A shift is a clock-anchored 12-hour block, used for temporal sequencing
+#     only (not day/night classification). shift_in_episode counts shifts from
+#     the episode start; shift_index_from_pca_start (after D. Brooks) is 0 for
+#     the shift in which PCA started, negative before, positive after.
+#   - The shift-based side-effect fields built here (e.g. shift 1 = prophylaxis
+#     at induction; shift 2 onwards) are kept for descriptive and temporal
+#     analyses. The side-effect OUTCOMES used in the comparative analysis are
+#     the anaesthesia-stop-anchored flags built in 4_flags.R (Flag 9).
+#   - Runtime: about 10 minutes.
 # ============================================================
 
 library(tidyverse)
 library(lubridate)
+
+# Antiemetics counted in this script's shift-level descriptive fields. The outcome
+# flags (4_flags.R, Flag 9) use antiemetic_drugs from drug_lists.R; any difference
+# between the two lists is reported here rather than left to drift silently.
+shift_table_antiemetics <- c("ondansetron", "cyclizine", "metoclopramide",
+                             "droperidol", "haloperidol")
+source("drug_lists.R")
+if (exists("antiemetic_drugs")) {
+  list_diff <- c(setdiff(shift_table_antiemetics, tolower(antiemetic_drugs)),
+                 setdiff(tolower(antiemetic_drugs), shift_table_antiemetics))
+  if (length(list_diff) > 0) {
+    warning("shift-table antiemetic list differs from drug_lists.R antiemetic_drugs: ",
+            paste(list_diff, collapse = ", "))
+  }
+}
 
 # ============================================================
 # LOAD CLEANED DATA
@@ -237,10 +247,7 @@ side_effects_by_shift <- non_pca_mar_clean |>
   ) |>
   group_by(PAT_ENC_CSN_ID, med_admin_shift) |>
   summarise(
-    antiemetic_given   = any(tolower(GENERIC_NAME) %in% c(
-      "ondansetron", "cyclizine", "metoclopramide",
-      "droperidol", "haloperidol"
-    )),
+    antiemetic_given   = any(tolower(GENERIC_NAME) %in% shift_table_antiemetics),
     antipruritic_given = any(
       tolower(GENERIC_NAME) == "chlorphenamine" |
         naloxone_type == "low_dose_pruritus"
@@ -426,11 +433,11 @@ cat("\nDeriving episode metrics...\n")
 episode_metrics <- episode_shifts |>
   group_by(PAT_ENC_CSN_ID, episode_id, drug, mode) |>
   summarise(
-    
+
     # ---- Episode duration ----
     total_shifts         = n(),
     episode_duration_hrs = first(episode_duration_hrs),
-    
+
     # ---- Pain metrics ----
     shifts_with_assessment    = sum(!no_pain_assessment),
     shifts_no_assessment      = sum(no_pain_assessment),
@@ -439,7 +446,7 @@ episode_metrics <- episode_shifts |>
     shifts_moderate_pain      = sum(had_moderate_pain),
     pct_shifts_severe         = mean(had_severe_pain) * 100,
     pct_shifts_moderate       = mean(had_moderate_pain) * 100,
-    
+
     # Time to pain control
     # First shift where pain mild/absent AND assessment done
     first_controlled_shift = min(
@@ -450,10 +457,10 @@ episode_metrics <- episode_shifts |>
       ],
       na.rm = TRUE
     ),
-    
+
     # ---- WINDOW A: Full episode (shift 1 onwards) ----
     # Includes prophylactic shift 1 — use for sensitivity only
-    
+
     any_antiemetic_full      = any(antiemetic_given),
     any_antipruritic_full    = any(antipruritic_given),
     any_naloxone_full        = any(naloxone_any),
@@ -461,11 +468,11 @@ episode_metrics <- episode_shifts |>
     any_naloxone_pruritus    = any(naloxone_pruritus),
     any_side_effect_full     = any(any_side_effect),
     any_laxative_full        = any(laxative_given),
-    
+
     pct_shifts_antiemetic_full    = mean(antiemetic_given) * 100,
     pct_shifts_antipruritic_full  = mean(antipruritic_given) * 100,
     pct_shifts_side_effect_full   = mean(any_side_effect) * 100,
-    
+
     shift_first_antiemetic_full   = min(
       shift_in_episode[antiemetic_given], na.rm = TRUE
     ),
@@ -475,11 +482,11 @@ episode_metrics <- episode_shifts |>
     shift_first_naloxone_full     = min(
       shift_in_episode[naloxone_any], na.rm = TRUE
     ),
-    
+
     # ---- WINDOW B: Post-shift-1 (shift 2 onwards) ← PRIMARY ----
     # Excludes shift 1 prophylactic prescribing at induction
     # More likely to represent established opioid side effects
-    
+
     any_antiemetic           = any(
       antiemetic_given[shift_in_episode > 1],
       na.rm = TRUE
@@ -496,7 +503,7 @@ episode_metrics <- episode_shifts |>
       laxative_given[shift_in_episode > 1],
       na.rm = TRUE
     ),
-    
+
     pct_shifts_antiemetic    = mean(
       antiemetic_given[shift_in_episode > 1],
       na.rm = TRUE
@@ -509,7 +516,7 @@ episode_metrics <- episode_shifts |>
       any_side_effect[shift_in_episode > 1],
       na.rm = TRUE
     ) * 100,
-    
+
     shift_first_antiemetic   = min(
       shift_in_episode[
         antiemetic_given & shift_in_episode > 1
@@ -534,11 +541,11 @@ episode_metrics <- episode_shifts |>
       ],
       na.rm = TRUE
     ),
-    
+
     # ---- WINDOW C: Shift 1 only ----
     # Captures prophylactic effect at induction
     # Difference between Window A and B = prophylaxis contribution
-    
+
     any_antiemetic_shift1    = any(
       antiemetic_given[shift_in_episode == 1],
       na.rm = TRUE
@@ -551,18 +558,18 @@ episode_metrics <- episode_shifts |>
       any_side_effect[shift_in_episode == 1],
       na.rm = TRUE
     ),
-    
+
     # ---- Co-analgesia metrics ----
     pct_shifts_paracetamol   = mean(paracetamol_given) * 100,
     pct_shifts_nsaid         = mean(nsaid_given) * 100,
     pct_shifts_adjuvant      = mean(adjuvant_given) * 100,
     pct_shifts_neuropathic   = mean(neuropathic_given) * 100,
     pct_shifts_laxative      = mean(laxative_given) * 100,
-    
+
     .groups = "drop"
-    
+
   ) |>
-  
+
   # Clean up Inf values where events never occurred
   mutate(
     across(

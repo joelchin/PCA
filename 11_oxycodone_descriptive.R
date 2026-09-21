@@ -1,29 +1,33 @@
 # ============================================================
-# 11 — Section 2: Oxycodone Descriptive
-# Paediatric PCA Study
-# Addenbrooke's Hospital
+# 11 — Oxycodone descriptive analysis
+# Paediatric PCA/NCA study — Addenbrooke's Hospital (CUH NHS FT)
+# Author: J Chin
+# ============================================================
 #
-# Purpose:
-# Describes oxycodone PCA/NCA episodes in detail
-# Primary novel contribution of the paper
+# Purpose
+#   Describes oxycodone PCA/NCA episodes in detail (the descriptive component of
+#   the paper).
 #
-# Population:
-#   Table 1 (Demographics): unique oxycodone patients (PAT_ID dedup)
-#   All other tables: S4 — all oxycodone episodes (n=1,237)
+# Population
+#   Table 1 (demographics): unique oxycodone patients (one row per PAT_ID,
+#   earliest episode kept). All other tables: S4, i.e. all oxycodone episodes.
 #
-# Side-effect definitions (see 4_flags.R Flag 9):
+# Inputs
+#   In session: pca_episodes_flagged, admissions_clean, episode_metrics,
+#   episode_shift_table. File: episode_dose.rds.
+#
+# Definitions
+#   Side-effect outcomes are the final flags from 4_flags.R (Flag 9):
 #   reactive_antiemetic_final, any_antipruritic_final,
-#   any_naloxone_reversal_final, any_side_effect_final
+#   any_naloxone_reversal_final, any_side_effect_final.
+#   Case type is reported twice: the original case_type (any OPCS-coded
+#   operation on the admission) for audit, and case_type_refined, which is the
+#   one to use for reporting.
 #
-# Pain/co-analgesia columns (pct_shifts_severe, first_controlled_
-# shift, pct_shifts_paracetamol, etc.) are joined onto s4_oxy once at
-# build time, so Tables 5, 6, 7, and 8 all read from the same base
-# object with these columns present.
-#
-# Table 1's case type line shows both the original, unrefined
-# case_type ("does any OPCS-coded operation exist for this
-# admission") and case_type_refined side by side — the original for
-# an audit trail, the refined version for actual reporting.
+# Output
+#   Console tables 1-11 (demographics, dosing and mode, procedure category,
+#   side effects by mode / age group / era, pain, co-analgesia, rotation into
+#   oxycodone, multiple rotations, dosing).
 # ============================================================
 
 library(tidyverse)
@@ -43,7 +47,7 @@ stopifnot(
 stopifnot("case_type_refined" %in% names(pca_episodes_flagged))
 
 cat("============================================================\n")
-cat("ANALYSIS 5 — OXYCODONE DESCRIPTIVE (SECTION 2)\n")
+cat("SCRIPT 11 — OXYCODONE DESCRIPTIVE (SECTION 2)\n")
 cat("============================================================\n\n")
 
 # ============================================================
@@ -507,7 +511,7 @@ if (!is.null(daily_consumption)) {
               q75 = round(quantile(mcg_per_kg_hr, 0.75, na.rm=TRUE), 2))
   cat(sprintf("  Overall: %.2f (%.2f–%.2f) mcg/kg/hr\n",
               consume_overall$median, consume_overall$q25, consume_overall$q75))
-  
+
   consume_surg <- daily_consumption |>
     mutate(is_surgical = (paste(PAT_ENC_CSN_ID, episode_id, sep="_") %in%
                             paste(s4_surgical_keys$PAT_ENC_CSN_ID, s4_surgical_keys$episode_id, sep="_"))) |>
@@ -517,7 +521,7 @@ if (!is.null(daily_consumption)) {
               q75 = round(quantile(mcg_per_kg_hr, 0.75, na.rm=TRUE), 2))
   cat(sprintf("  Surgical: %.2f (%.2f–%.2f) mcg/kg/hr\n",
               consume_surg$median, consume_surg$q25, consume_surg$q75))
-  
+
   consume_nonsurg <- daily_consumption |>
     mutate(is_surgical = (paste(PAT_ENC_CSN_ID, episode_id, sep="_") %in%
                             paste(s4_surgical_keys$PAT_ENC_CSN_ID, s4_surgical_keys$episode_id, sep="_"))) |>
@@ -574,20 +578,20 @@ episode_dose <- tryCatch(
 )
 
 if (!is.null(episode_dose)) {
-  
+
   oxy_dose <- episode_dose |>
     filter(drug == "oxycodone") |>
     semi_join(s4_oxy, by = c("PAT_ENC_CSN_ID", "episode_id"))
-  
+
   cat(sprintf("Oxycodone episodes with dose data: %d / %d\n\n", nrow(oxy_dose), n_episodes))
-  
+
   cat("--- Overall dosing (S4) ---\n")
   cat("Background rate (mg/kg/hr) — median (IQR): ", fmt_med_iqr(oxy_dose$background_rate_mg_kg_hr_median, 4), "\n")
   cat("Bolus dose (mg/kg) — median (IQR):          ", fmt_med_iqr(oxy_dose$bolus_dose_mg_kg_first, 4), "\n")
   cat("Daily background dose (mg/kg/day) — median (IQR): ", fmt_med_iqr(oxy_dose$daily_background_mg_kg, 3), "\n")
   cat("Loading dose prescribed — n (%):            ",
       fmt_n_pct(sum(oxy_dose$had_loading_dose, na.rm = TRUE), nrow(oxy_dose)), "\n\n")
-  
+
   cat("--- Dosing by age group ---\n")
   oxy_dose |>
     group_by(age_group) |>
@@ -601,7 +605,7 @@ if (!is.null(episode_dose)) {
       .groups = "drop"
     ) |> arrange(age_group) |> print()
   cat("\n")
-  
+
   cat("--- Dosing by mode ---\n")
   oxy_dose |>
     left_join(s4_oxy |> select(PAT_ENC_CSN_ID, episode_id, mode), by = c("PAT_ENC_CSN_ID", "episode_id")) |>
@@ -615,7 +619,7 @@ if (!is.null(episode_dose)) {
       .groups = "drop"
     ) |> print()
   cat("\n")
-  
+
   cat("--- Dosing by era ---\n")
   oxy_dose |>
     left_join(s4_oxy |> select(PAT_ENC_CSN_ID, episode_id, era), by = c("PAT_ENC_CSN_ID", "episode_id")) |>
@@ -628,7 +632,7 @@ if (!is.null(episode_dose)) {
       .groups = "drop"
     ) |> print()
   cat("\n")
-  
+
   cat("--- Concentration used by age group ---\n")
   oxy_dose |>
     group_by(age_group) |>
@@ -640,13 +644,13 @@ if (!is.null(episode_dose)) {
       .groups = "drop"
     ) |> arrange(age_group) |> print()
   cat("\n")
-  
+
 } else {
   cat("Dosing section skipped — run 7_dosing.R first\n\n")
 }
 
 cat("============================================================\n")
-cat("ANALYSIS 5 COMPLETE\n")
+cat("SCRIPT 11 COMPLETE\n")
 cat("Table 1: unique patients (n=", n_patients, "). All other tables:\n")
 cat("S4, all episodes (n=", n_episodes, "). FINAL side-effect definitions\n")
 cat("throughout, shared with 10_comparative_PSM.R and global reporting.\n")

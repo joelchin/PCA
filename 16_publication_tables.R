@@ -1,96 +1,64 @@
-# 16 — Publication Tables
-# Paediatric PCA Study
-# Addenbrooke's Hospital
-#
-# Builds the manuscript's five publication tables (Table 1: cohort
-# characteristics; Table 2: descriptive efficacy/consumption; Table
-# 3: drug switching; Table 4: PSM-matched comparative outcomes;
-# Table 5: rotation) as flextable objects ready for Word export.
-#
-# A few methodological choices worth noting:
-#
-#   Table 1's case type field is case_type_refined, not the original
-#   unrefined case_type — the unrefined field produces a persistent
-#   92%/8% split that doesn't move across subgroups and is not a
-#   reliable case-type signal.
-#
-#   Table 2 reports genuine efficacy metrics (peak pain score,
-#   background consumption) rather than the SI (Service Improvement)
-#   project's osteotomy-derived pain metrics (% shifts severe, shift
-#   to pain control) — those belong to a different analytical
-#   question and population. Its procedure-category breakdown uses
-#   proc_category_display: surgical categories are shown
-#   individually and non-surgical episodes are collapsed to one row,
-#   mirroring Table 1's case-type logic. The composite side-effect
-#   outcome is not shown here — it's dropped from the comparative
-#   claim entirely (see Table 4 below) and showing it descriptively
-#   here without the comparative context would be misleading.
-#   "Shifts with paracetamol/NSAID, %" rows are also not included:
-#   paracetamol co-prescribing is ~100% across every group (zero
-#   variance, uninformative for this comparison) and both rows sit
-#   more naturally within the SI pain-management-quality project than
-#   this manuscript's core oxycodone-vs-morphine question.
-#
-#   A supplementary, descriptive-only comparison of morphine NCA
-#   outcomes against Howard et al.'s prospective series of 10,079
-#   morphine NCA patients is run immediately after Table 1, to
-#   validate the reliability of our outcome definitions and data
-#   extraction pipeline against external published data (reported in
-#   Results; not a manuscript table).
-#
-#   Table 4 reports antiemetic, antipruritic, and naloxone reversal
-#   as three independent outcomes rather than a combined composite
-#   side-effect measure, since a composite assumes equal severity
-#   across component events, which doesn't hold clinically.
-#
-#   pre_match, post_match, and table4_matched_outcomes are built
-#   directly from the live pipeline objects (psm_data, matched_data)
-#   rather than independently reconstructed from saved keys — this
-#   keeps this script's population figures mechanically identical to
-#   whatever 10_comparative_PSM.R actually produced, rather than
-#   risking two independently-maintained copies of the same
-#   patient-dedup/neonate-exclusion/gender-recode logic drifting out
-#   of sync with each other. add_psm_covariates() is applied
-#   asymmetrically: matched_data does not carry specialty_collapsed,
-#   asa_grade, the intraop flags, or anaesthesia_duration_mins, so
-#   post_match needs the rebuild; psm_data already carries all ten
-#   covariates, so applying it to pre_match would instead collide
-#   with the existing columns and produce duplicate .x/.y columns.
-#
-#   Table 5 draws on four objects from 15_rotation_analysis.R (tbl5,
-#   ft5b, ft5c, ft5d). ft5d is the covariate-adjusted rotation-away
-#   odds ratio, computed on the pre-match eligible pool (psm_data)
-#   rather than the much smaller 237/237 matched sample, since the
-#   matched sample has too few rotation-away events (25 total) to
-#   support a stable adjusted estimate.
-#
-#   case_type_refined is reported at patient level in Table 1
-#   (79.3%/20.7%), not episode level.
-#
-#   Naloxone-reversal factor() calls specify levels = c(FALSE, TRUE)
-#   explicitly, since oxycodone's S4 population has zero reversal
-#   events and factor() without explicit levels would otherwise only
-#   detect one level and error.
 # ============================================================
+# 16 — Publication tables (Word export)
+# Paediatric PCA/NCA study — Addenbrooke's Hospital (CUH NHS FT)
+# Author: J Chin
+# ============================================================
+#
+# Purpose
+#   Builds manuscript Tables 1-5 and exports them to a Word document.
+#   Table 1  Patient and episode characteristics
+#   Table 2  Oxycodone PCA/NCA episode characteristics (S4, all episodes)
+#   Table 3  Propensity-matching covariate balance (pre- and post-match)
+#   Table 4  Primary outcomes, matched comparison. Antiemetic, antipruritic and
+#            naloxone reversal are reported as three independent outcomes (no
+#            composite). Efficacy = peak and time-weighted mean pain score.
+#            Total dose (background + bolus) is restricted to episodes with
+#            >= 80% pump flowsheet coverage.
+#   Table 5  Rotation (panels 5a-5d, built in 15_rotation_analysis.R)
+#   Also prints a supplementary console summary of morphine NCA episodes (n, age,
+#   side-effect rates, total dose where flowsheet data exist).
+#
+# Inputs
+#   psm_data and matched_data (from 10_comparative_PSM.R; read from disk if not in the
+#     session) and tbl5, ft5b, ft5c, ft5d (from 15_rotation_analysis.R; the script
+#     is run separately if they are missing).
+#   In session (required): pca_episodes_flagged,
+#     admissions_clean, anaesthesia_events_clean, anaesthesia_ax_clean,
+#     intraop_mar_clean, pain_scores_clean, episode_metrics,
+#     s3_morphine_keys, s3_oxycodone_keys.
+#   Files: episode_dose.rds, episode_true_total_dose.rds, psm_matched_keys.rds.
+#
+# Output
+#   manuscript_tables_R_<YYYYMMDD_HHMMSS>.docx. Each run writes a new timestamped
+#   file, so a lock held by an open copy of an earlier file cannot block the run.
+#
+# Design notes
+#   - Pre-match, post-match and Table 4 are taken from the live psm_data /
+#     matched_data objects rather than being rebuilt from keys, so the tables and
+#     the matching cannot drift apart.
+#   - matched_data does not carry the matching covariates specialty_collapsed,
+#     asa_grade, the intraoperative flags or anaesthesia_duration_mins;
+#     add_psm_covariates() adds them to the post-match data. psm_data already has
+#     them and must not be passed through it.
+#   - Tests: chi-squared (categorical), Wilcoxon rank-sum (continuous), Fisher's
+#     exact test for naloxone reversal (sparse events).
+# ============================================================
+
 required_pkgs <- c("gtsummary", "flextable", "officer", "labelled")
-missing_pkgs <- required_pkgs[!sapply(required_pkgs, requireNamespace, quietly = TRUE)]
+missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing_pkgs) > 0) {
-  cat("Installing missing packages:", paste(missing_pkgs, collapse = ", "), "\n\n")
-  install.packages(missing_pkgs)
-  still_missing <- required_pkgs[!sapply(required_pkgs, requireNamespace, quietly = TRUE)]
-  if (length(still_missing) > 0) {
-    stop("Install failed for: ", paste(still_missing, collapse = ", "),
-         "\nCheck for errors above (e.g. CRAN mirror not set, no internet access on this remote desktop).")
-  }
+  stop("Install the missing packages first: install.packages(c(",
+       paste0('"', missing_pkgs, '"', collapse = ", "), "))")
 }
 
 library(tidyverse)
 library(gtsummary)
 library(flextable)
 library(officer)
+source("utils_stats.R")   # safe_chisq(), paired_binary(), paired_continuous()
 
 cat("============================================================\n")
-cat("ANALYSIS 11 — PUBLICATION TABLES\n")
+cat("SCRIPT 16 — PUBLICATION TABLES\n")
 cat("============================================================\n\n")
 
 stopifnot(
@@ -109,10 +77,13 @@ stopifnot(
 # 10_comparative_PSM.R, run earlier in the same session, NOT loaded
 # from a saved .rds). This is the fix for the pre_match/psm_data
 # drift identified during validation.
-stopifnot(
-  exists("psm_data"),
-  exists("matched_data")
-)
+for (obj in c("psm_data", "matched_data")) {
+  if (!exists(obj)) {
+    f <- file.path("1 - data/3 - processed_data", paste0(obj, ".rds"))
+    if (!file.exists(f)) stop(obj, " not found: run 10_comparative_PSM.R first.")
+    assign(obj, readRDS(f))
+  }
+}
 
 stopifnot("case_type_refined" %in% names(pca_episodes_flagged))
 
@@ -287,7 +258,7 @@ cat("comparative outcome.)\n\n")
 
 # ============================================================
 # TABLE 2 — OXYCODONE DESCRIPTIVE (S4, all episodes)
-# "Shifts with paracetamol/NSAID" REMOVED this pass — see header note.
+# Shift-level paracetamol / NSAID rows are deliberately omitted (near-universal co-prescribing, no variance).
 # ============================================================
 cat("Building Table 2 — oxycodone descriptive (S4)...\n")
 
@@ -326,7 +297,7 @@ if (!is.null(episode_dose_for_consumption)) {
     filter(drug == "oxycodone") |>
     mutate(mcg_per_kg_hr = (total_background_mg * 1000) / (WEIGHT_KG * episode_duration_dose_hrs)) |>
     select(PAT_ENC_CSN_ID, episode_id, mcg_per_kg_hr)
-  
+
   s4_oxy_t2 <- s4_oxy_t2 |>
     left_join(s4_consumption, by = c("PAT_ENC_CSN_ID", "episode_id"))
 } else {
@@ -459,11 +430,11 @@ antiemetic_tab <- table(surgical_vs_medical$population, surgical_vs_medical$reac
 antipruritic_tab <- table(surgical_vs_medical$population, surgical_vs_medical$any_antipruritic_final)
 
 if (ncol(antiemetic_tab) == 2) {
-  ct1 <- suppressWarnings(chisq.test(antiemetic_tab))
+  ct1 <- safe_chisq(antiemetic_tab)
   cat("Chi-squared, antiemetic, surgical vs medical: p =", format.pval(ct1$p.value, digits = 3), "\n")
 }
 if (ncol(antipruritic_tab) == 2) {
-  ct2 <- suppressWarnings(chisq.test(antipruritic_tab))
+  ct2 <- safe_chisq(antipruritic_tab)
   cat("Chi-squared, antipruritic, surgical vs medical: p =", format.pval(ct2$p.value, digits = 3), "\n")
 }
 cat("\n")
@@ -500,7 +471,7 @@ add_psm_covariates <- function(df) {
     "ENT"                    = "PAEDIATRIC EAR NOSE AND THROAT"
   )
   SPECIALTY_VOLUME_THRESHOLD <- 30
-  
+
   df <- df |>
     mutate(
       specialty_merged = recode(as.character(ADMITTING_SPECIALTY),
@@ -517,7 +488,7 @@ add_psm_covariates <- function(df) {
                                     specialty_merged, "Other specialty"),
       proc_category = if_else(proc_category == "Other", "Unclassified", proc_category)
     )
-  
+
   new_intraop_flags <- intraop_mar_clean |>
     group_by(PAT_ENC_CSN_ID) |>
     summarise(
@@ -530,37 +501,37 @@ add_psm_covariates <- function(df) {
       had_intraop_diamorphine = any(str_detect(str_to_lower(generic_name), "diamorphine"), na.rm = TRUE),
       .groups = "drop"
     )
-  
+
   df <- df |>
     left_join(new_intraop_flags, by = "PAT_ENC_CSN_ID") |>
     mutate(across(c(had_intraop_paracetamol, had_intraop_nsaid, had_intraop_magnesium,
                     had_intraop_fentanyl, had_intraop_morphine, had_intraop_oxycodone2,
                     had_intraop_diamorphine),
                   ~ replace_na(.x, FALSE)))
-  
+
   duration_data <- anaesthesia_events_clean |>
     select(PAT_ENC_CSN_ID, anaesthesia_duration_mins) |>
     distinct(PAT_ENC_CSN_ID, .keep_all = TRUE)
-  
+
   df <- df |> left_join(duration_data, by = "PAT_ENC_CSN_ID")
   median_duration <- median(df$anaesthesia_duration_mins, na.rm = TRUE)
   df <- df |>
     mutate(anaesthesia_duration_mins = if_else(
       is.na(anaesthesia_duration_mins), median_duration, anaesthesia_duration_mins
     ))
-  
+
   asa_data <- anaesthesia_ax_clean |>
     filter(!is.na(asa_grade)) |>
     distinct(PAT_ENC_CSN_ID, .keep_all = TRUE) |>
     select(PAT_ENC_CSN_ID, asa_grade)
-  
+
   df <- df |> left_join(asa_data, by = "PAT_ENC_CSN_ID")
   if (sum(is.na(df$asa_grade)) > 0) {
     asa_mode <- names(sort(table(df$asa_grade), decreasing = TRUE))[1]
     df <- df |> mutate(asa_grade = if_else(is.na(asa_grade), asa_mode, asa_grade))
   }
   df <- df |> mutate(asa_grade = factor(asa_grade, ordered = TRUE))
-  
+
   df
 }
 
@@ -744,7 +715,7 @@ tbl4 <- table4_matched_outcomes |>
   bold_labels() |>
   bold_p(t = 0.05) |>
   modify_footnote(
-    all_stat_cols() ~ "Continuous: median (IQR). Categorical: n (%). p-values: chi-squared (categorical) unless noted, Wilcoxon rank-sum (continuous), Fisher's exact test for naloxone reversal (sparse event count). Three co-equal outcome domains are reported (side effects, efficacy, consumption); side-effect components (antiemetic, antipruritic, naloxone reversal) are reported individually rather than as a combined composite. Side-effect outcomes use FINAL anaesthesia-stop-anchored definitions (see Methods). Peak pain score and time-weighted mean pain score are the efficacy domain; the latter weights each reading by the time it applied until the next reading, excluding time before the first documented reading (see Methods). Episode duration is reported as a descriptive characteristic, not one of the three pre-defined outcome domains. Total dose (background + bolus) restricted to episodes with >=80% pump flowsheet coverage; linkage not random by drug (p=0.013) but a separate IPW sensitivity check confirmed the naive comparison is robust to this. NOTE: naloxone reversal counts shown here (matched subset, n=474) differ from the full-cohort chart-reviewed figure (0 oxycodone vs 3 morphine, all episodes) reported elsewhere in the manuscript — both are correct, describing different populations (matched vs full cohort); do not present them as conflicting."
+    all_stat_cols() ~ "Continuous: median (IQR). Categorical: n (%). p-values: chi-squared (categorical) unless noted, Wilcoxon rank-sum (continuous), Fisher's exact test for naloxone reversal (sparse event count). Three co-equal outcome domains are reported (side effects, efficacy, consumption); side-effect components (antiemetic, antipruritic, naloxone reversal) are reported individually rather than as a combined composite. Side-effect outcomes use FINAL anaesthesia-stop-anchored definitions (see Methods). Peak pain score and time-weighted mean pain score are the efficacy domain; the latter weights each reading by the time it applied until the next reading, excluding time before the first documented reading (see Methods). Episode duration is reported as a descriptive characteristic, not one of the three pre-defined outcome domains. Total dose (background + bolus) restricted to episodes with >=80% pump flowsheet coverage; linkage to the flowsheet was not random by drug, but a separate IPW sensitivity check confirmed that the naive comparison is robust to this. Naloxone reversal counts shown here refer to the matched subset and differ from the full-cohort chart-reviewed figure reported elsewhere in the manuscript, which describes a different population (all episodes)."
   )
 
 cat("--- Laxative (descriptive only, not part of tbl4's formal p-value table) ---\n")
@@ -762,12 +733,17 @@ cat("Table 4 built\n\n")
 #
 # Built by 15_rotation_analysis.R, run BEFORE this script — produces
 # FOUR objects, not three: tbl5 (5a, descriptive rate), ft5b
-# (destinations), ft5c (multi-rotation pattern), and ft5d (NEW —
-# covariate-adjusted rotation-away OR, computed on the pre-match
-# eligible pool due to too few events — 25 — in the 237/237 matched
-# sample alone; see script 15 for full rationale).
+# (destinations), ft5c (multi-rotation pattern), and ft5d (covariate-adjusted
+# rotation-away OR, computed on the pre-match eligible pool because the
+# matched sample has too few events; see script 15 for the rationale).
 # ============================================================
 
+if (!all(vapply(c("tbl5", "ft5b", "ft5c", "ft5d"), exists, logical(1)))) {
+  cat("Table 5 objects not in the session — running 15_rotation_analysis.R separately.\n")
+  env15 <- new.env(parent = globalenv())
+  source("15_rotation_analysis.R", local = env15)
+  for (nm in c("tbl5", "ft5b", "ft5c", "ft5d")) assign(nm, get(nm, envir = env15))
+}
 stopifnot(
   exists("tbl5"), exists("ft5b"), exists("ft5c"), exists("ft5d")
 )
@@ -789,13 +765,14 @@ ft3 <- as_flex_table(tbl3) |> ft_theme()
 ft4 <- as_flex_table(tbl4) |> ft_theme()
 ft5a <- as_flex_table(tbl5) |> ft_theme()
 
-# NOTE — the study end date in the manuscript title below still
-# needs confirming (April vs July 2026 — see Methods discussion).
-# Update once max(admissions_clean$ADM_DATE) is checked.
+# The study end date is taken from the data (latest ADM_DATE in admissions_clean)
+# and printed, so it can be checked against the Methods text.
+study_end_label <- format(max(admissions_clean$ADM_DATE, na.rm = TRUE), "%B %Y")
+cat("Study period end (latest ADM_DATE):", study_end_label, "\n")
 doc <- read_docx() |>
   body_add_par("Oxycodone PCA/NCA in Children: Manuscript Tables",
                style = "heading 1") |>
-  body_add_par("Addenbrooke's Hospital · October 2014 – [CONFIRM DATE]",
+  body_add_par(paste0("Addenbrooke's Hospital · October 2014 – ", study_end_label),
                style = "Normal") |>
   body_add_par("", style = "Normal") |>
   body_add_flextable(ft1) |>
@@ -824,6 +801,6 @@ doc <- read_docx() |>
 print(doc, target = output_path)
 
 cat("\n============================================================\n")
-cat("ANALYSIS 11 COMPLETE\n")
+cat("SCRIPT 16 COMPLETE\n")
 cat("Output:", output_path, "(Tables 1-5, including Panel 5d)\n")
 cat("============================================================\n")

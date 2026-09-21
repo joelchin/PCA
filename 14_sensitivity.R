@@ -1,49 +1,42 @@
 # ============================================================
-# 14 — Sensitivity Analyses
-# Paediatric PCA Study
-# Addenbrooke's Hospital
+# 14 — Sensitivity analyses
+# Paediatric PCA/NCA study — Addenbrooke's Hospital (CUH NHS FT)
+# Author: J Chin
+# ============================================================
 #
-# run_psm()'s formula matches 10_comparative_PSM.R's production
-# formula exactly (specialty_collapsed, asa_grade, expanded intraop
-# covariates), so every sensitivity check tests the same core model
-# as the primary analysis rather than a simpler stand-in. Outcomes
-# use the finalised anaesthesia-stop-anchored definitions (4_flags.R
-# Flag 9). The primary row is read live from psm_matched_keys.rds
-# rather than hardcoded.
+# Purpose
+#   Tests whether the primary matched result (side-effect composite) is robust
+#   to analytic choices. run_psm() uses the same propensity formula as the
+#   primary analysis in 10_comparative_PSM.R.
 #
-# Regional-technique sensitivity is a single "regional-free" pool
-# excluding all regional techniques (epidural, caudal, spinal,
-# peripheral nerve block) together, rather than testing caudal and
-# spinal exclusion separately — the clinically meaningful question is
-# whether the result holds when PCA/NCA is the only analgesic
-# technique. A separate "regional-inclusive" pool isn't a distinct
-# check, since that's the existing primary population, which already
-# excludes only definitive epidural and treats everything else as a
-# covariate.
+# Analyses
+#   - Primary result, read live from psm_matched_keys.rds.
+#   - PSM 1:2 matching, and a 0.3 SD caliper.
+#   - Regional-free pool: excludes every regional technique (epidural, caudal,
+#     spinal, peripheral nerve block), i.e. PCA/NCA as the only analgesic
+#     technique. (A regional-inclusive pool is the primary population.)
+#   - Exclusion set: conservative (exclude_minor_procedure_any, used in the
+#     primary analysis) vs strict (exclude_minor_procedure_any_strict).
+#   - Exploratory: all cases including medical. This is a different population,
+#     not a variation of one analytic choice, and is labelled accordingly.
+#   - Patient-level deduplication check on the primary matched result: does the
+#     odds ratio change when repeat-patient episodes are reduced to one per
+#     patient per arm?
+#   Not done: an episode-gap threshold other than 12 h (needs a full pipeline
+#   re-run from 2_cleaningscript.R with a different gap value).
 #
-# "All cases (incl. medical)" is an exploratory comparison, not a
-# same-population sensitivity check: S3/primary is surgical-only by
-# construction, so this is a genuinely different population rather
-# than a variation on one analytic choice.
+# Inputs
+#   File: psm_matched_keys.rds. In session: pca_episodes_flagged, admissions_clean,
+#   anaesthesia_ax_clean, anaesthesia_events_clean, episode_metrics,
+#   intraop_mar_clean, s3_morphine_keys, s3_oxycodone_keys.
 #
-# A patient-level deduplication check on the primary matched result
-# specifically (not a re-match, but a check of whether the existing
-# matched-pairs OR changes when repeat-patient episodes are
-# deduplicated to one per patient per arm) is included because peak
-# pain score was previously found to be a clustering artefact under
-# this kind of check, and the composite side-effect outcome hadn't
-# been checked for the same issue.
-#
-# Episode gap threshold (6h/24h vs the locked 12h) is not tested
-# here — it requires a full pipeline rerun from 2_cleaningscript.R
-# with a different gap value, not a filter on already-built episodes.
-#
-# Primary outcome throughout: any_side_effect_final
+# Primary outcome throughout: any_side_effect_final (4_flags.R, Flag 9).
 # ============================================================
 
 library(tidyverse)
 library(lubridate)
 library(MatchIt)
+source("utils_stats.R")   # safe_chisq(), paired_binary(), paired_continuous()
 
 # ============================================================
 # LOAD DATA
@@ -59,7 +52,7 @@ stopifnot(
 )
 
 cat("============================================================\n")
-cat("ANALYSIS 9 — SENSITIVITY ANALYSES\n")
+cat("SCRIPT 14 — SENSITIVITY ANALYSES\n")
 cat("============================================================\n\n")
 
 fmt_n_pct <- function(n, total) {
@@ -71,7 +64,7 @@ fmt_n_pct <- function(n, total) {
 # ============================================================
 
 build_matching_covariates <- function(data) {
-  
+
   same_service_map <- c(
     "NEUROSURGERY"           = "PAEDIATRIC NEUROSURGERY",
     "TRAUMA & ORTHOPAEDICS"  = "PAEDIATRIC TRAUMA AND ORTHOPAEDICS",
@@ -82,26 +75,26 @@ build_matching_covariates <- function(data) {
     "ENT"                    = "PAEDIATRIC EAR NOSE AND THROAT"
   )
   SPECIALTY_VOLUME_THRESHOLD <- 30
-  
+
   data <- data |>
     mutate(
       specialty_merged = recode(as.character(ADMITTING_SPECIALTY),
                                 !!!same_service_map,
                                 .default = as.character(ADMITTING_SPECIALTY))
     )
-  
+
   keep_specialties <- data |>
     count(specialty_merged) |>
     filter(n >= SPECIALTY_VOLUME_THRESHOLD) |>
     pull(specialty_merged)
-  
+
   data <- data |>
     mutate(
       specialty_collapsed = if_else(specialty_merged %in% keep_specialties,
                                     specialty_merged, "Other specialty"),
       proc_category = if_else(proc_category == "Other", "Unclassified", proc_category)
     )
-  
+
   new_intraop_flags <- intraop_mar_clean |>
     group_by(PAT_ENC_CSN_ID) |>
     summarise(
@@ -114,39 +107,39 @@ build_matching_covariates <- function(data) {
       had_intraop_diamorphine = any(str_detect(str_to_lower(generic_name), "diamorphine"), na.rm = TRUE),
       .groups = "drop"
     )
-  
+
   data <- data |>
     left_join(new_intraop_flags, by = "PAT_ENC_CSN_ID") |>
     mutate(across(c(had_intraop_paracetamol, had_intraop_nsaid, had_intraop_magnesium,
                     had_intraop_fentanyl, had_intraop_morphine, had_intraop_oxycodone2,
                     had_intraop_diamorphine),
                   ~ replace_na(.x, FALSE)))
-  
+
   duration_data <- anaesthesia_events_clean |>
     select(PAT_ENC_CSN_ID, anaesthesia_duration_mins) |>
     distinct(PAT_ENC_CSN_ID, .keep_all = TRUE)
-  
+
   data <- data |> left_join(duration_data, by = "PAT_ENC_CSN_ID")
   median_duration <- median(data$anaesthesia_duration_mins, na.rm = TRUE)
   data <- data |>
     mutate(anaesthesia_duration_mins = if_else(
       is.na(anaesthesia_duration_mins), median_duration, anaesthesia_duration_mins
     ))
-  
+
   asa_data <- anaesthesia_ax_clean |>
     filter(!is.na(asa_grade)) |>
     distinct(PAT_ENC_CSN_ID, .keep_all = TRUE) |>
     select(PAT_ENC_CSN_ID, asa_grade)
-  
+
   data <- data |> left_join(asa_data, by = "PAT_ENC_CSN_ID")
   if (sum(is.na(data$asa_grade)) > 0) {
     asa_mode <- names(sort(table(data$asa_grade), decreasing = TRUE))[1]
     data <- data |> mutate(asa_grade = if_else(is.na(asa_grade), asa_mode, asa_grade))
   }
   data <- data |> mutate(asa_grade = factor(asa_grade, ordered = TRUE))
-  
+
   data <- data |> filter(GENDER != "Not specified")
-  
+
   data
 }
 
@@ -163,16 +156,16 @@ PSM_FORMULA <- treated ~ AGE + WEIGHT_KG + GENDER + proc_category +
 # ============================================================
 
 run_psm <- function(data, label, ratio = 1, caliper = 0.2) {
-  
+
   cat(sprintf("\n--- %s ---\n", label))
   cat(sprintf("Pre-match: morphine n=%d, oxycodone n=%d\n",
               sum(data$treated == 0), sum(data$treated == 1)))
-  
+
   data <- data |>
     mutate(WEIGHT_KG = if_else(is.na(WEIGHT_KG), median(WEIGHT_KG, na.rm = TRUE), WEIGHT_KG))
-  
+
   data <- build_matching_covariates(data)
-  
+
   data <- data |>
     mutate(
       proc_category        = factor(proc_category),
@@ -180,7 +173,7 @@ run_psm <- function(data, label, ratio = 1, caliper = 0.2) {
       GENDER               = factor(GENDER),
       mode                 = factor(mode)
     )
-  
+
   set.seed(42)
   match_out <- tryCatch({
     matchit(
@@ -197,16 +190,16 @@ run_psm <- function(data, label, ratio = 1, caliper = 0.2) {
     cat("MatchIt error:", conditionMessage(e), "\n")
     return(NULL)
   })
-  
+
   if (is.null(match_out)) return(NULL)
-  
+
   matched <- match.data(match_out)
-  
+
   cat(sprintf("Matched: oxycodone n=%d, morphine n=%d\n",
               sum(matched$treated == 1), sum(matched$treated == 0)))
   cat(sprintf("Unmatched oxycodone: %d\n",
               sum(data$treated == 1) - sum(matched$treated == 1)))
-  
+
   outcomes <- matched |>
     select(PAT_ENC_CSN_ID, episode_id, drug, treated) |>
     left_join(
@@ -216,7 +209,7 @@ run_psm <- function(data, label, ratio = 1, caliper = 0.2) {
                any_naloxone_reversal_final, any_side_effect_final),
       by = c("PAT_ENC_CSN_ID", "episode_id")
     )
-  
+
   result <- outcomes |>
     group_by(drug) |>
     summarise(
@@ -227,17 +220,17 @@ run_psm <- function(data, label, ratio = 1, caliper = 0.2) {
       n_nalox_rev     = sum(any_naloxone_reversal_final, na.rm = TRUE),
       .groups = "drop"
     )
-  
+
   print(result)
-  
+
   tab <- table(outcomes$drug, outcomes$any_side_effect_final)
   if (ncol(tab) == 2) {
-    ct <- suppressWarnings(chisq.test(tab))
+    ct <- safe_chisq(tab)
     or <- (tab["oxycodone", 2] / tab["oxycodone", 1]) /
       (tab["morphine",  2] / tab["morphine",  1])
     cat(sprintf("Composite SE: OR=%.2f, p=%.4f\n", or, ct$p.value))
   }
-  
+
   cat("\n")
   invisible(outcomes)
 }
@@ -257,15 +250,15 @@ summarise_sensitivity <- function(outcomes, label) {
   or  <- NA_real_
   pv  <- NA_real_
   if (ncol(tab) == 2) {
-    ct <- suppressWarnings(chisq.test(tab))
+    ct <- safe_chisq(tab)
     or <- round((tab["oxycodone",2]/tab["oxycodone",1]) /
                   (tab["morphine", 2]/tab["morphine", 1]), 2)
     pv <- round(ct$p.value, 4)
   }
-  cat(sprintf("%-45s  n=%d, %s%%  n=%d, %s%%  OR=%.2f  p=%.4f\n",
+  cat(sprintf("%-45s  n=%d, %s%%  n=%d, %s%%  OR=%s  p=%s\n",
               label, n_mor, pct_mor, n_oxy, pct_oxy,
-              ifelse(is.na(or), 0, or),
-              ifelse(is.na(pv), 1, pv)))
+              ifelse(is.na(or), "NA", sprintf("%.2f", or)),
+              ifelse(is.na(pv), "NA", sprintf("%.4f", pv))))
 }
 
 # ============================================================
@@ -464,7 +457,7 @@ primary_matched_keys <- tryCatch(
 )
 
 if (!is.null(primary_matched_keys)) {
-  
+
   primary_matched_full <- primary_matched_keys |>
     select(PAT_ENC_CSN_ID, episode_id, drug) |>
     left_join(admissions_clean |> select(PAT_ENC_CSN_ID, PAT_ID),
@@ -473,34 +466,34 @@ if (!is.null(primary_matched_keys)) {
       pca_episodes_flagged |> select(PAT_ENC_CSN_ID, episode_id, episode_start, any_side_effect_final),
       by = c("PAT_ENC_CSN_ID", "episode_id")
     )
-  
+
   n_dup_patients <- primary_matched_full |>
     count(PAT_ID) |>
     filter(n > 1) |>
     nrow()
-  
+
   cat(sprintf("Patients appearing more than once in matched pairs: %d\n", n_dup_patients))
-  
+
   # Deduplicate: one episode per patient PER ARM (a patient could
   # legitimately appear once in each arm if they had both drugs
   # matched at different times — only collapse WITHIN each arm)
   primary_matched_dedup <- primary_matched_full |>
     arrange(PAT_ID, drug, episode_start) |>
     distinct(PAT_ID, drug, .keep_all = TRUE)
-  
+
   cat(sprintf("Episode-level n: morphine=%d, oxycodone=%d\n",
               sum(primary_matched_full$drug == "morphine"),
               sum(primary_matched_full$drug == "oxycodone")))
   cat(sprintf("Patient-deduplicated n: morphine=%d, oxycodone=%d\n\n",
               sum(primary_matched_dedup$drug == "morphine"),
               sum(primary_matched_dedup$drug == "oxycodone")))
-  
+
   cat("--- Episode-level (primary, as-is) ---\n")
   summarise_sensitivity(primary_matched_full, "Episode-level (primary)")
-  
+
   cat("\n--- Patient-deduplicated ---\n")
   summarise_sensitivity(primary_matched_dedup, "Patient-deduplicated")
-  
+
 } else {
   cat("Dedup check skipped — psm_matched_keys.rds not available.\n\n")
 }
@@ -534,7 +527,7 @@ if (!is.null(primary_matched_keys)) {
 
 cat("\n")
 cat("============================================================\n")
-cat("ANALYSIS 9 COMPLETE\n")
+cat("SCRIPT 14 COMPLETE\n")
 cat("All sensitivity checks now use the SAME core matching formula\n")
 cat("as 10_comparative_PSM.R (specialty_collapsed, asa_grade, expanded\n")
 cat("intraop covariates) and the FINALISED side-effect definitions.\n")

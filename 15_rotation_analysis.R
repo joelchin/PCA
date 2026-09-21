@@ -1,39 +1,38 @@
-# 15 — Rotation Analysis
-# Paediatric PCA Study
-# Addenbrooke's Hospital
+# ============================================================
+# 15 — Rotation analysis (Table 5)
+# Paediatric PCA/NCA study — Addenbrooke's Hospital (CUH NHS FT)
+# Author: J Chin
+# ============================================================
 #
-# Extracted from 16_publication_tables.R into its own script, since
-# rotation analysis is conceptually distinct from Tables 1-4 (all
-# PSM/descriptive-population content) and had grown large enough to
-# deserve separation.
+# Purpose
+#   Builds the rotation panels of Table 5:
+#   5a  rotation-away rate by drug (global: all episodes, all drugs)
+#   5b  rotation destination (origin drug -> destination drug)
+#   5c  multi-rotation summary (>= 2 genuine transitions within one admission),
+#       using run-length encoding to distinguish genuine leave-and-return
+#       sequences from repeated episodes on the same drug
+#   5d  covariate-adjusted odds ratio for rotation away, oxycodone vs morphine,
+#       from a Firth-corrected logistic model fitted on the pre-match eligible
+#       pool (psm_data) with the same covariate set as the matching model. The
+#       matched sample has too few events to support a model of this size.
 #
-# Builds Table 5 in three panels:
-#   5a — rotation-away rate by drug, global (all episodes, all drugs)
-#   5b — rotation destination (origin drug -> destination drug)
-#   5c — multi-rotation summary (>=2 genuine transitions within a
-#        single admission), using run-length encoding to correctly
-#        distinguish genuine leave-and-return sequences from trivial
-#        same-drug repetition (see script comments below for detail)
-#   5d — matched-population-consistent, covariate-adjusted rotation-
-#        away odds ratio (oxycodone vs morphine), computed on the
-#        pre-match eligible pool (psm_data) rather than the 237/237
-#        matched pairs, due to too few events in the matched sample
-#        alone (25 total) to support a ~20-covariate model
+# Inputs (in session)
+#   pca_episodes_flagged in session; psm_data (built by 10_comparative_PSM.R, read
+#   from psm_data.rds if it is not already in the session).
 #
-# Produces: tbl5 (gtsummary object, panel 5a), ft5b, ft5c (flextable
-# objects, panels 5b/5c) — consumed by 16_publication_tables.R for
-# the Word export. Run this BEFORE 16_publication_tables.R.
+# Outputs (in session; consumed by 16_publication_tables.R)
+#   tbl5 (gtsummary, 5a), ft5b, ft5c, ft5d (flextable, 5b-5d).
 #
-# Deliberately excludes: the chart-reviewed rotation REASONS (25
-# matched cases, side-effect vs inadequate-analgesia) and the PSM-
-# matched/adjusted rotation-away OR — both live in Table 4 and
-# Results-section prose respectively, not here. This script is
-# purely descriptive, full-cohort, all-drugs.
+# Scope
+#   5a-5c are descriptive and full-cohort. The chart-reviewed rotation reasons
+#   (matched cases: side effect vs inadequate analgesia) are reported in the
+#   Results text, not here. Run this script BEFORE 16_publication_tables.R.
 # ============================================================
 
 library(tidyverse)
 library(gtsummary)
 library(flextable)
+library(logistf)
 
 stopifnot(exists("pca_episodes_flagged"))
 
@@ -229,11 +228,10 @@ cat(sprintf(
 # ============================================================
 # PANEL D — COVARIATE-ADJUSTED ROTATION-AWAY OR (PRE-MATCH POOL)
 # ============================================================
-# Added [DATE]. Runs on the PRE-MATCH ELIGIBLE POOL (psm_data from
-# 10_comparative_PSM.R: 1,718 morphine + 433 oxycodone), NOT the
-# 237/237 matched sample. Reasoning: the matched sample has only 25
-# rotation-away events total — too sparse to trust a ~20-covariate
-# model even with Firth correction (roughly 1 event per covariate).
+# Runs on the PRE-MATCH ELIGIBLE POOL (psm_data from
+# 10_comparative_PSM.R), NOT the matched sample. Reasoning: the matched
+# sample has too few rotation-away events in total — too sparse to trust a
+# ~20-covariate model even with Firth correction.
 # The pre-match pool is ~5x larger, still eligibility-restricted
 # (first-line, first-episode, surgical, non-epidural — same criteria
 # as matching itself) and uses the identical covariate formula, so
@@ -246,9 +244,11 @@ cat(sprintf(
 # from psm_data/matched_data construction in script 10) — so the OR
 # below is expressed as oxycodone vs morphine (reference).
 
-library(logistf)
-
-stopifnot(exists("psm_data"))
+if (!exists("psm_data")) {
+  psm_file <- "1 - data/3 - processed_data/psm_data.rds"
+  if (!file.exists(psm_file)) stop("psm_data not found: run 10_comparative_PSM.R first.")
+  psm_data <- readRDS(psm_file)
+}
 stopifnot(exists("rotation_data"))  # built earlier in this script
 
 # Join the rotation-away flag onto the pre-match eligible pool.
@@ -322,22 +322,16 @@ ft5d <- flextable::flextable(tbl5d_data) |>
       "Table 5d. Covariate-adjusted rotation-away odds ratio ",
       "(Firth-corrected logistic regression, same covariates as ",
       "propensity-score matching). Estimated on the pre-match ",
-      "eligible pool rather than the 237/237 matched sample, due to ",
-      "too few rotation-away events (25) within the matched sample ",
-      "alone to support this covariate set."
+      "eligible pool rather than the matched sample, due to too few ",
+      "rotation-away events within the matched sample alone to ",
+      "support this covariate set."
     )
   )
 
 cat("\nft5d built — ready for 16_publication_tables.R\n\n")
 
-# This run is the confirmed, current figure to cite: adjusted OR
-# 0.102 (95% CI 0.032-0.271, p<0.001) on the pre-match eligible pool
-# (n=2,151). This supersedes two earlier candidate figures that
-# appeared in draft material (0.124 and ~0.19) — those were computed
-# under different, no-longer-current formulations and should not be
-# cited. State explicitly in Methods/Results that this OR describes
-# the pre-match eligible pool, not the matched pairs, so a reader
-# isn't confused about which population this OR relates to relative
-# to Tables 3-4's 237/237 matched sample.
+# The adjusted OR describes the pre-match eligible pool, not the matched
+# pairs. State this explicitly in Methods/Results so readers know which
+# population it relates to relative to Tables 3-4.
 
 cat("Script 15 complete - tbl5, ft5b, ft5c, ft5d ready for 16_publication_tables.R\n\n")
