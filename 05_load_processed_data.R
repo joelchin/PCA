@@ -30,7 +30,7 @@ cat("exclude_pca_before_procedure present:",
 # ------------------------------------------------------------
 
 cat("============================================================\n")
-cat("CHECK: PSM matched pairs (expect 237)\n")
+cat("CHECK: PSM matched pairs (expect 234)\n")
 cat("============================================================\n")
 if (exists("psm_matched_keys")) {
   cat("Matched pairs:", nrow(psm_matched_keys) / 2, "\n")
