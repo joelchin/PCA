@@ -28,16 +28,9 @@ stopifnot(
 # Manual sex correction (site-specific)
 # ------------------------------------------------------------
 # One patient recorded as "Not specified" had sex confirmed as female
-# from the clinical record. The patient ID is not stored in this
-# repository: it is read from a local file (one PAT_ID per line) in
-# PCA_DATA_DIR/manual_corrections/. If the file is absent, no correction
-# is applied.
-gender_fix_file <- file.path(Sys.getenv("PCA_DATA_DIR"), "manual_corrections",
-                             "gender_fix_pat_ids.txt")
-gender_fix_pat <- if (file.exists(gender_fix_file)) {
-  trimws(readLines(gender_fix_file, warn = FALSE))
-} else character(0)
-gender_fix_pat <- gender_fix_pat[nzchar(gender_fix_pat)]
+# from the clinical record. LOCAL VERSION: put the PAT_ID here (exactly as
+# stored in admissions_clean). Do not publish this file with the ID in it.
+gender_fix_pat <- c("PUT_PAT_ID_HERE")
 
 if (length(gender_fix_pat) > 0) {
   fix_csn <- admissions_clean |>
