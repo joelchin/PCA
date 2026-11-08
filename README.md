@@ -10,11 +10,12 @@ children, using an electronic health record (EPIC) extract.
 
 ## Requirements
 
-- R >= 4.4
+- R >= 4.4 (the manuscript analyses were run in R 4.5.3)
 - Packages: `tidyverse`, `lubridate`, `readxl`, `MatchIt`, `logistf`,
-  `sandwich`, `gtsummary`, `flextable`, `officer`, `furrr`, `future`, `tictoc`, `zip`
-  (script 01 installs missing CRAN binaries; `MatchIt` and `logistf` may need a
-  manual install on locked-down machines).
+  `survival`, `survminer`, `gtsummary`, `flextable`, `officer`, `furrr`,
+  `future`, `tictoc`, `zip` (optionally `ragg` for the figure export).
+  Script 01 installs missing CRAN binaries; `MatchIt`, `logistf` and
+  `survminer` may need a manual install on locked-down machines.
 
 ## Configuration
 
@@ -33,35 +34,33 @@ Optional local-only files (never committed) in `PCA_DATA_DIR/manual_corrections/
 - `corrupted_counter_csns.txt`: encounter IDs, one per line, with a confirmed corrupted pump counter (script 08)
 
 Also required, produced outside this pipeline: `naloxone_reclassifications.rds`
-(manually curated from chart review; used by script 04).
+(manual chart-review reclassification of naloxone administrations; used by script 04).
 
 ## Pipeline
 
-Run from a fresh R session, in order. Intermediate outputs are written as
-`.rds` files under `PCA_DATA_DIR`.
+Run from a fresh R session, with the working directory set to this folder, and
+run the scripts in order in the same session. Intermediate outputs are written
+as `.rds` files under `PCA_DATA_DIR`. Scripts 09 to 12 use objects left in the
+session by the previous scripts (`psm_data`, `matched_data`, `match_out`, and
+the Table 4 objects), so run them together.
 
 | Script | Purpose |
 |---|---|
 | `01_load_raw_data.R` | Read raw extract, check inputs, set up packages |
 | `02_clean_data.R` | Clean each table; build PCA/NCA episodes (slow; cached) |
-| `03_build_shift_table.R` | Build 12-hour shift-level analysis table and episode metrics |
-| `04_derive_episode_flags.R` | Exclusion flags, concurrent-epidural detection, side-effect outcome flags |
-| `05_load_processed_data.R` | Load processed data at the start of a session; verification checks |
-| `06_classify_cohorts.R` | Surgical/non-surgical classification; analysis populations |
-| `07_calculate_doses.R` | Opioid dose and consumption from syringe records |
+| `03_build_shift_table.R` | Build 12-hour shift-level table and episode metrics |
+| `04_derive_episode_flags.R` | Exclusion flags, concurrent-epidural detection, outcome definitions, pain scores |
+| `05_load_processed_data.R` | Load the processed data at the start of an analysis session |
+| `06_classify_cohorts.R` | Analysis populations and population flow counts |
+| `07_calculate_doses.R` | Background infusion dose per episode |
 | `08_calculate_true_total_dose.R` | Total dose (background + bolus) from pump flowsheets |
-| `09_comparative_psm.R` | Propensity score matching and primary comparison |
-| `10_opioid_consumption.R` | Consumption in the matched cohort |
-| `11_oxycodone_descriptive.R` | Descriptive analysis of all oxycodone episodes |
-| `12_safety_outcomes.R` | Safety outcomes |
-| `13_subgroup_analyses.R` | Subgroup analyses |
-| `14_sensitivity_analyses.R` | Sensitivity analyses |
-| `15_rotation_analysis.R` | Opioid rotation analysis |
-| `16_publication_tables.R` | Manuscript tables |
-| `17_pain_score_analysis.R` | Pain score completeness, bias check and sensitivity analysis |
-| `18_final_outcomes.R` | Final matched-cohort outcome summary with effect sizes |
+| `09_comparative_psm.R` | Propensity score matching |
+| `10_time_to_effect.R` | Time to a sustained pain score of 3 or below (Figure 2) |
+| `11_rotation_analysis.R` | Opioid rotation (Table 4) |
+| `12_publication_tables.R` | Manuscript tables; comparison with Howard et al. (2010) |
 
-`drug_lists.R` (shared drug, nerve-block and OPCS classification lists) is sourced by scripts 02, 04 and 05 and must sit in the same folder as them (`R/`).
+`drug_lists.R` (shared drug, nerve-block and OPCS classification lists) is
+sourced by scripts 02 to 05 and must sit in the same folder as the scripts.
 
 ## Data governance
 

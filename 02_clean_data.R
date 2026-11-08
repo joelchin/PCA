@@ -1,28 +1,14 @@
 # ============================================================
-# 02 — CLEAN DATA — Paediatric PCA Study
+# 02 - Clean data
 # ============================================================
+# Cleans each raw table loaded by 01_load_raw_data.R, builds the PCA/NCA
+# episodes and saves the cleaned tables to 1 - data/3 - processed_data/.
+# Slow (about 30 minutes, dominated by the shift-matching steps), so
+# downstream scripts reuse the saved outputs.
 #
-# Takes the raw tables loaded by 01_load_raw_data.R and produces the
-# cleaned, feature-derived versions used by the rest of the pipeline.
-# Runs in roughly 30 minutes.
-#
-# Pipeline order:
-# 1. source("01_load_raw_data.R")
-# 2. source("02_clean_data.R")   <- this script
-# 3. source("03_build_shift_table.R")
-# 4. source("04_derive_episode_flags.R")
-# 5. source("05_load_processed_data.R")
-#
-# Drug lists are maintained centrally in drug_lists.R and sourced
-# below — edit them there, not here.
-#
-# Outputs saved to: 1 - data/3 - processed_data/
-#
-# Note on operations/procedure attribution: proc_category and
-# PFMD_PROC_OPCS_CODES are attached to pca_episodes at the episode
-# level in Section 6D below, using the nearest preceding operation
-# rather than a simple admission-level join. 04_derive_episode_flags.R's demographics
-# section relies on this and does not re-derive it independently.
+# proc_category and PFMD_PROC_OPCS_CODES are attached to pca_episodes at
+# episode level in section 6D (nearest preceding operation), not by an
+# admission-level join; 04_derive_episode_flags.R relies on this.
 # ============================================================
 
 library(tidyverse)
@@ -31,8 +17,7 @@ library(furrr)
 library(future)
 library(tictoc)
 
-# Load drug lists
-source("drug_lists.R")
+source(file.path(getOption("pca_code_dir", "."), "drug_lists.R"))
 
 # ============================================================
 # PARALLEL PROCESSING SETUP
@@ -61,28 +46,39 @@ match_date_to_shift_number <- function(date_time, shifts) {
 }
 
 # ============================================================
-# LOAD SHIFTS TABLE — AUTO-EXTEND IF DATA CEILING HAS MOVED PAST IT
-#
-# 1_shifts.rds is a static, pre-generated 12h-block grid anchored at
-# 2014-01-01 08:00 that does not auto-extend on its own. Any
-# timestamp falling after its last block would otherwise be silently
-# mapped to NA by match_date_to_shift_number() rather than raising an
-# error, and any PCA episode with an NA shift would then silently
-# drop out of episode_shifts/episode_metrics downstream while
-# remaining present in pca_episodes — a population mismatch between
-# the two objects that's easy to miss.
-#
-# To avoid this, the table is checked against the current data's
-# ceiling on every run and extended forward to the end of the current
-# calendar year whenever needed, so a new data refresh can never
-# silently outrun the table's coverage.
+# SHIFT TABLE
 # ============================================================
+# 12-hour blocks anchored at 2014-01-01 08:00. If the table does not
+# exist it is created; it is then extended forward to the end of the
+# calendar year of the latest timestamp in the raw data, so that no
+# timestamp falls outside the grid (unmatched timestamps would be NA and
+# the episode would silently drop out of the shift-level tables).
 
-shifts <- readRDS("1 - data/3 - processed_data/1_shifts.rds")
+shifts_path <- "1 - data/3 - processed_data/1_shifts.rds"
+dir.create(dirname(shifts_path), showWarnings = FALSE, recursive = TRUE)
+
+if (file.exists(shifts_path)) {
+  shifts <- readRDS(shifts_path)
+} else {
+  grid_start <- as.POSIXct("2014-01-01 08:00:00", tz = "UTC")
+  shifts <- tibble(
+    shift_number = 1L,
+    start_time   = grid_start,
+    end_time     = grid_start + hours(12) - seconds(1)
+  )
+}
 cat("Shifts loaded:", nrow(shifts), "shifts\n")
 
+latest_timestamp <- max(
+  as.POSIXct(c(admissions$ADM_DATE, admissions$DISCHARGE_DATE)),
+  as.POSIXct(c(pca_mar$TAKEN_TIME, pca_mar$Discontinue_Time)),
+  as.POSIXct(non_pca_mar$ADMIN_TIME),
+  as.POSIXct(pain_scores$score_time),
+  na.rm = TRUE
+)
+
 target_ceiling <- as.POSIXct(
-  paste0(year(Sys.Date()), "-12-31 23:59:59"),
+  paste0(year(latest_timestamp), "-12-31 23:59:59"),
   tz = tz(shifts$end_time)
 )
 
@@ -105,16 +101,13 @@ if (max(shifts$end_time) < target_ceiling) {
   )
   
   shifts <- bind_rows(shifts, new_shifts)
+  saveRDS(shifts, shifts_path)
   
-  saveRDS(shifts, "1 - data/3 - processed_data/1_shifts.rds")
-  
-  cat("Shifts table extended:", nrow(new_shifts), "new blocks added",
-      "(previous coverage capped at", format(last_end_time), ")\n")
+  cat("Shifts table extended:", nrow(new_shifts), "new blocks added\n")
   cat("   New coverage ceiling:", format(max(shifts$end_time)), "\n")
   
 } else {
-  cat("Shifts table coverage already extends to",
-      format(max(shifts$end_time)), "— no extension needed\n")
+  cat("Shifts table already extends to", format(max(shifts$end_time)), "\n")
 }
 
 tic()
@@ -221,16 +214,13 @@ pca_mar_clean <- pca_mar |>
       str_extract(PROGRAMME, "(?i)(?<=bolus dose: )\\d+\\.?\\d*")
     ),
     
-    # Continuous background infusion rate (mL/hr), parsed from the
-    # PROGRAMME text. Covers 98.5% of rows; the raw INFUSION_RATE
-    # column only covers 13.9% and is too sparse to use directly.
+    # Background infusion rate (mL/h) parsed from the PROGRAMME text;
+    # the raw INFUSION_RATE column is too sparse to use.
     background_rate_ml = as.numeric(
       str_extract(PROGRAMME, "(?i)(?<=continuous infusion rate:\\s)[0-9.]+")
     ),
     
-    # Loading dose (mL), parsed from PROGRAMME. "None" (most orders)
-    # correctly yields NA rather than 0 — any downstream
-    # had_loading_dose flag should be based on !is.na(), not > 0.
+    # Prescribed loading dose (mL); "None" gives NA, not 0
     loading_dose_ml = as.numeric(
       str_extract(PROGRAMME, "(?i)(?<=loading dose:\\s)[0-9.]+")
     ),
@@ -246,18 +236,13 @@ pca_mar_clean <- pca_mar |>
   )
 
 # ============================================================
-# CONCENTRATION EXTRACTION (mg per mL)
-#
-# Needed by 07_calculate_doses.R. Two more direct sources were considered and
-# rejected: PROGRAMME's "Each Xml bolus should deliver Y" statement
-# covers only 2/20,470 rows, and DOSE/DOSE_UNIT is ~99.7% missing
-# despite DOSE_UNIT occasionally containing "mg/mL". Concentration is
-# instead derived from MED_ORDER: oxycodone_mg/morphine_mg already
-# hold the pharmacy-calculated total mg dissolved in that syringe
-# (weight-adjusted at preparation time), so dividing by diluent
-# volume gives concentration directly. weight_based orders ("X mg/kg"
-# text) are excluded, since there's no fixed total mg to divide.
+# CONCENTRATION (mg per mL), used by 07_calculate_doses.R
 # ============================================================
+# Taken from MED_ORDER: oxycodone_mg / morphine_mg hold the total mg in
+# the syringe, so dividing by the diluent volume gives the concentration.
+# DOSE/DOSE_UNIT and the PROGRAMME text are too sparsely populated to
+# use. Weight-based orders ("X mg/kg") have no fixed total mg and are
+# excluded.
 
 cat("\nExtracting drug concentration (mg/mL) from MED_ORDER...\n")
 
@@ -416,7 +401,6 @@ non_pca_mar_clean <- non_pca_mar |>
       tolower(GENERIC_NAME) %in% tolower(analgesic_drugs)   ~ "analgesic",
       tolower(GENERIC_NAME) %in% tolower(side_effect_drugs) ~ "side_effect_marker",
       tolower(GENERIC_NAME) %in% tolower(laxative_drugs)    ~ "laxative",
-      tolower(GENERIC_NAME) %in% tolower(chemo_drugs)       ~ "chemotherapy",
       TRUE                                                   ~ "other"
     ),
     
@@ -510,95 +494,52 @@ operations_clean <- operations |>
 cat("Operations clean (base extraction):", nrow(operations_clean), "rows\n")
 
 # ============================================================
-# 6A. primary_opcs_substantive — RESOLVING BUNDLED OPCS CODES
-#
-# Operation records can bundle more than one OPCS code under a single
-# row (25.7% of rows, 1,200/4,663) when multiple procedures are
-# performed together. A simple first-code extraction (primary_opcs
-# above) is a positional choice, not a clinical one, and can select
-# an incidental code ahead of the genuinely substantive procedure —
-# for example a row coded "N13.4 \r\n T30.9", where T30.9 (exploratory
-# laparotomy) is the substantive operation but sits second.
-#
-# primary_opcs_substantive addresses this directly: it takes the
-# first code in the row that is not on opcs_exclude (the
-# minor-procedure list, sourced from drug_lists.R so this script and
-# 04_derive_episode_flags.R share one definition), falling back to primary_opcs only
-# when every code in the row is minor — in that case the row is
-# non-substantive regardless of which code is picked.
-#
-# primary_opcs is retained unchanged above for reference;
-# primary_opcs_substantive is what proc_category and the 6D
-# episode-attribution step are built from.
+# 6A. primary_opcs_substantive: resolving bundled OPCS codes
 # ============================================================
-
-# opcs_treat_as_minor_for_category — codes to skip when searching for
-# a substantive companion code, used only for proc_category
-# selection. Deliberately separate from opcs_exclude (which drives
-# PSM eligibility) — these codes are judged incidental on clinical
-# grounds (standalone diagnostic/minor procedures unlikely to
-# independently explain multi-day PCA use), using the same standard
-# already applied when opcs_exclude itself was built.
+# A single operation row can carry several OPCS codes. Taking the first
+# code is positional rather than clinical (e.g. "N13.4 \r\n T30.9" would
+# pick the incidental testis biopsy over the laparotomy), so
+# primary_opcs_substantive takes the first code on the row that is not
+# on the minor list, falling back to primary_opcs only when every code
+# is minor. proc_category and the episode-level attribution in 6D are
+# built from it; primary_opcs itself is kept unchanged.
 #
-# Defined here as a standalone vector rather than inline inside the
-# mutate() call below: opcs_exclude has ~31 elements, and dplyr
-# recycles a vector of that length down the rows of operations_clean
-# rather than passing each row the full list, so an inline %in% check
-# inside map2_chr would silently compare against one arbitrary code
-# per row instead of the full minor-code list.
+# opcs_treat_as_minor_for_category is used only to choose proc_category
+# and for case_type_refined. It extends opcs_exclude (which defines
+# eligibility for the comparative population) with codes judged
+# incidental on clinical grounds. It is defined as a standalone vector
+# because an inline vector of this length would be recycled down the
+# rows inside mutate().
+
 opcs_treat_as_minor_for_category <- c(
   opcs_exclude,
-  "N13.4",   # biopsy testis — oncology-adjacent, often bundled with a genuinely substantive companion code
-  
-  # ---- additional minor/incidental codes ----
-  "A76.5",   # splanchnic sympathetic nerve block — an analgesic
-             # technique, not a driving procedure
-  "H02.4",   # laparoscopic incidental appendicectomy — self-labelled
-  "H44.6",   # EUA rectum, manual evacuation — minor, brief
-  "M13.1",   # needle biopsy kidney, US-guided — standalone diagnostic
-  "T87.2",   # excision biopsy cervical lymph node — oncology-diagnostic,
-             # same pattern as N13.4 (often bundled with Hickman/BMA)
-  "S15.1",   # biopsy head lesion — standalone diagnostic
-  "S15.2",   # skin biopsy — standalone diagnostic
-  "P09.2",   # drainage vulval lesion — minor
-  "P31.2",   # drainage pouch of Douglas — minor
-  "P27.3",   # cystovaginoscopy (+biopsy abdominal mass) — diagnostic
-  "F36.2",   # biopsy tonsil — standalone diagnostic
-  
-  # ---- tube/stoma-maintenance cluster (Abdominal/GI) ----
-  # device servicing, not new operative trauma — closure/exchange of
-  # an existing gastrostomy/jejunostomy or reduction of a stoma
-  # prolapse, not a fresh source of pain
+  # Diagnostic or sampling procedures
+  "N13.4",   # biopsy testis
+  "M13.1",   # needle biopsy kidney
+  "T87.2",   # excision biopsy cervical lymph node
+  "S15.1",   # biopsy head lesion
+  "S15.2",   # skin biopsy
+  "F36.2",   # biopsy tonsil
+  "P27.3",   # cystovaginoscopy
+  "X55.1",   # biopsy abdominal mass
+  "X55.8",   # examination under anaesthetic
+  "M45.5",   # rigid cystoscopy for micturating cystogram
+  # Minor drainage or evacuation
+  "H44.6",   # EUA rectum, manual evacuation
+  "P09.2",   # drainage vulval lesion
+  "P31.2",   # drainage pouch of Douglas
+  # Analgesic or anaesthetic techniques coded as procedures
+  "A76.5",   # splanchnic sympathetic nerve block
+  "A52.5",   # thoracic epidural
+  # Incidental procedures
+  "H02.4",   # incidental appendicectomy at laparoscopy
+  "X27.3",   # supernumerary toe excision, bundled with an
+             # "operation not found" placeholder
+  # Tube and stoma maintenance
   "G34.4",   # closure gastrostomy
-  "G34.5",   # removal GT tube + GT insertion OGD
+  "G34.5",   # removal and reinsertion of gastrostomy tube
   "G60.3",   # closure jejunostomy
-  "G75.5",   # reduction ileostomy prolapse
-  
-  # ---- identified via systematic review of oncology-patient episodes ----
-  "X55.8",   # examination under anaesthetic alone — correctly
-             # non-substantive but originally missing from this list,
-             # so row_fully_minor/case_type_refined never picked it up
-  "A52.5",   # thoracic epidural — an anaesthetic technique, not an
-             # operation; miscoded as if it were a procedure
-  "M45.5",   # rigid cystoscopy + catheter insertion for micturating
-             # cystogram — diagnostic imaging procedure, not surgery
-  
-  # X55.1 was initially grouped with the amputation/mass-excision
-  # cluster below under the assumption it meant mass excision, like
-  # X53.1/X53.2. Review of further instances shows it's consistently
-  # coded for "biopsy abdominal mass" alone — a diagnostic sampling
-  # procedure, the same oncology-diagnostic pattern as N13.4, not
-  # genuine major surgery — hence its place here instead.
-  "X55.1",
-  
-  # X27.3 — excision supernumerary great toe, bundled in the same row
-  # with a literal "OPERATION NOT FOUND" placeholder. Isolated
-  # supernumerary toe excision is not typically a PCA-level
-  # procedure clinically, and the co-occurring placeholder suggests
-  # this admission's real driving procedure may simply be missing
-  # from operations_clean, rather than the toe excision being the
-  # genuine substantive surgery.
-  "X27.3"
+  "G75.5"    # reduction ileostomy prolapse
 )
 
 operations_clean <- operations_clean |>
@@ -607,30 +548,16 @@ operations_clean <- operations_clean |>
     primary_opcs_substantive = map2_chr(
       all_opcs_in_row, primary_opcs,
       function(codes, fallback) {
-        # Each candidate is checked against a letter+digits pattern
-        # before being considered, since placeholder text like "N/A"
-        # (used when a coder had no code to enter) would otherwise be
-        # accepted as a literal code — its chapter-letter extraction
-        # matches the leading "N" purely by coincidence, which lands
-        # genuinely uncoded admissions in "Male genitalia" (chapter N)
-        # for no clinically meaningful reason. One case in the PSM
-        # population illustrates the problem directly: an "N09"-
-        # bucketed episode whose real procedure was "failed
-        # laparoscopy converted to open / emergency appendicectomy",
-        # with PFMD_PROC_OPCS_CODES literally containing "N/A" rather
-        # than a real code.
+        # Only strings that look like an OPCS code are candidates;
+        # placeholders such as "N/A" would otherwise be read as chapter N.
         valid_codes <- codes[str_detect(codes, "^[A-Z]\\d+\\.?\\d*") & codes != ""]
         non_minor <- valid_codes[!(valid_codes %in% opcs_treat_as_minor_for_category)]
         if (length(non_minor) > 0) non_minor[1] else fallback
       }
     ),
     substantive_opcs_chapter = str_extract(primary_opcs_substantive, "^[A-Z]"),
-    # row_fully_minor — EVERY code on this specific operation row is
-    # on the minor list, i.e. nothing in this operation record rises
-    # above incidental. Used downstream (Flag 6, 04_derive_episode_flags.R) to build
-    # case_type_refined — episodes whose attributed operation is
-    # entirely minor get treated as effectively non-surgical, since
-    # the labelled procedure can't plausibly explain PCA need.
+    # TRUE when every code on this operation row is on the minor list;
+    # used in 04_derive_episode_flags.R for case_type_refined
     row_fully_minor = map_lgl(
       all_opcs_in_row,
       ~ all(.x[.x != ""] %in% opcs_treat_as_minor_for_category)
@@ -643,10 +570,7 @@ cat("Rows where substantive code differs from plain first code:",
         na.rm = TRUE), "\n\n")
 
 # ============================================================
-# 6B. proc_category — NOW DERIVED FROM primary_opcs_substantive
-#
-# Base chapter mapping (unchanged categories/logic), applied to the
-# CORRECTED substantive code rather than the positional first code.
+# 6B. proc_category from primary_opcs_substantive (OPCS chapter)
 # ============================================================
 
 operations_clean <- operations_clean |>
@@ -675,92 +599,35 @@ cat("Procedure category (from substantive code):\n")
 print(table(operations_clean$proc_category))
 
 # ============================================================
-# 6C. proc_category — REMAINING MANUAL OVERRIDES
-#
-# Once primary_opcs_substantive correctly surfaces the real driving
-# code in bundled rows (6A/6B above), most categories that might seem
-# to need protecting (orchidopexy under "Male genitalia", major
-# vascular codes, maxillofacial codes) turn out to already be correct
-# under the base chapter mapping. Only a handful of genuine
-# exceptions remain, handled below. Every category used here is one
-# of the original 16 — no new categories are introduced.
+# 6C. proc_category: manual overrides
 # ============================================================
+# Exceptions to the chapter mapping. No new categories are introduced.
 
 operations_clean <- operations_clean |>
   mutate(
     proc_category = case_when(
       
-      # N13.4 (biopsy testis) — genuinely incidental, oncology-
-      # adjacent (60% pre-dates admission's anaesthesia, chemo-
-      # positive). Only fires when N13.4 IS the substantive code
-      # (i.e. no non-minor companion exists in that row) — the
-      # T30.9 case above no longer reaches this line at all, since
-      # primary_opcs_substantive already resolved to T30.9 for that
-      # row, correctly landing it in Skin/trauma/general via 6B.
+      # Testis biopsy is incidental when it is the only substantive code
       primary_opcs_substantive == "N13.4" ~ "Unclassified",
       
-      # Unclassified (chapter X) split: the DDH/foot deformity
-      # correction cluster is genuine orthopaedic surgery
+      # Deformity-correction codes in chapter X are orthopaedic surgery
       primary_opcs_substantive %in% c("X22.1", "X22.2", "X22.3", "X22.5",
                                       "X24.2", "X24.3", "X25.1", "X25.4",
                                       "X48.1") ~ "Orthopaedic/spine",
       
-      # Amputation/mass-excision cluster — genuine major surgery,
-      # rehomed to an existing category rather than an invented one;
-      # Skin/trauma/general already holds comparable content (lymph
-      # node excisions, laparotomies, mass-related procedures). X55.1
-      # is deliberately excluded here — see opcs_treat_as_minor_for_
-      # category above, where it's classified as a biopsy rather than
-      # an excision, the same pattern as N13.4.
+      # Amputation and mass-excision codes in chapter X
       primary_opcs_substantive %in% c("X09.3", "X09.5", "X10.1", "X10.9",
                                       "X12.6", "X14.8", "X53.1",
                                       "X53.2") ~ "Skin/trauma/general",
       
-      # The base chapter mapping above has no explicit rule for
-      # chapter O, so O-codes would otherwise fall through to the
-      # generic "Other" catch-all. Only two O-codes exist in this
-      # data:
-      # O27.1 — genuine orthopaedic surgery ("reconstruction joint
-      # stabilisation" / "reconstruction knee joint stabilisation")
+      # Chapter O has no rule in the chapter mapping
       primary_opcs_substantive == "O27.1" ~ "Orthopaedic/spine",
-      # O56.2 — "portacath removal", functionally identical to L94.8
-      # (same chapter-L code, already on opcs_exclude) just coded
-      # under chapter O in this instance — categorised to match
-      # where L94.3/L94.8 already live
       primary_opcs_substantive == "O56.2" ~ "Vascular/lines",
       
-      # ---- Clinical recategorisation ----
-      # These two overrides move genuinely substantive procedures to
-      # the category a clinical reader would actually expect, rather
-      # than the strict OPCS chapter letter — same
-      # principle in both cases: OPCS classifies by anatomical
-      # system/structure operated on, not by which specialty performs
-      # or clinically "owns" the procedure.
-      #
-      # N09.2 (orchidopexy one stage) / N09.4 (laparoscopic
-      # orchidopexy second stage) — OPCS chapter N ("Male genitalia")
-      # by anatomical structure, but orchidopexy is a standard
-      # paediatric UROLOGY procedure in clinical practice.
+      # Clinical rather than anatomical grouping: orchidopexy is
+      # paediatric urology, and craniotomy for AVM is neurosurgery
       primary_opcs_substantive %in% c("N09.2", "N09.4") ~ "Urology",
-      
-      # L75.1 (craniotomy resection/ligation congenital
-      # arteriovenous malformation, posterior fossa) — OPCS chapter L
-      # ("Vascular/lines") because an AVM is technically a vascular
-      # malformation, but the actual operation is a posterior fossa
-      # CRANIOTOMY performed by neurosurgeons — clinically
-      # NEUROSURGERY, not vascular surgery.
       primary_opcs_substantive == "L75.1" ~ "Neurosurgery",
-      
-      # X27.3 (excision supernumerary great toe) deliberately gets no
-      # override here and falls through to the base chapter-X mapping
-      # ("Unclassified"). Two reasons: it's not typically a PCA-level
-      # procedure clinically — brief, low-morbidity, day-case in
-      # nature — and the same row bundles a literal "OPERATION NOT
-      # FOUND" placeholder, suggesting this admission's operation
-      # record is already incomplete and the real driving procedure
-      # may be missing entirely. It's also included in
-      # opcs_treat_as_minor_for_category above so it's treated as
-      # non-explanatory for case_type_refined as well.
       
       TRUE ~ proc_category
     )
@@ -771,44 +638,17 @@ cat("Final procedure category distribution:\n")
 print(table(operations_clean$proc_category))
 
 # ============================================================
-# 6D. EPISODE-LEVEL PROCEDURE ATTRIBUTION
-#
-# Each PCA episode is attributed to whichever operation is nearest in
-# time to it (by OpDate), rather than to the first operation recorded
-# for the admission as a whole. This matters for multi-operation
-# admissions (15.9% of S4): a simple admission-level attribution
-# would apply the same procedure category to every episode in the
-# admission regardless of which operation the episode actually
-# followed, whereas episode-level attribution lets each episode carry
-# the category of the operation it's clinically linked to — affecting
-# 234/867 multi-op episodes (29.4% of multi-op, 4.3% of all S4).
-#
-# Reads proc_category as computed in 6A-6C above (from
-# primary_opcs_substantive, which already accounts for bundled codes
-# within a single operation row).
-#
-# S3/PSM is unaffected by this — those admissions are already
-# restricted to a single operation via has_multiple_operations.
-#
-# One consequence worth noting: proc_category can genuinely differ
-# across episodes within the same admission. That's the intended
-# behaviour, not an inconsistency — it reflects each episode's actual
-# clinical context rather than treating the admission as a single
-# undifferentiated unit.
-#
-# Limitation: OpDate is date-only (0% of operations_clean rows have a
-# non-midnight time component), so same-day multiple operations can't
-# be perfectly ordered within the day. Ties are broken by lowest
-# OP_ORDER, consistent with how "primary" is defined elsewhere in
-# this pipeline.
-#
-# 04_derive_episode_flags.R's demographics section relies on proc_category and
-# PFMD_PROC_OPCS_CODES arriving already attached to pca_episodes from
-# this section, and does not re-join operations_clean itself.
+# 6D. Episode-level procedure attribution
 # ============================================================
+# Each episode is attributed to the operation nearest before it by
+# OpDate, rather than to the first operation of the admission, so that
+# episodes in multi-operation admissions carry the category of the
+# operation they followed. OpDate is date-only, so same-day operations
+# are ordered by lowest OP_ORDER. proc_category can therefore differ
+# between episodes of one admission. The primary comparative population
+# is restricted to single-operation admissions, so is unaffected.
 
-cat("\nAttributing proc_category at episode level (nearest preceding\n")
-cat("operation by OpDate, not admission-level first-row)...\n\n")
+cat("\nAttributing proc_category at episode level...\n\n")
 
 all_ops_dated <- operations_clean |>
   select(PAT_ENC_CSN_ID, OpDate, OP_ORDER, proc_category, PFMD_PROC_OPCS_CODES,
@@ -867,13 +707,9 @@ cat("\nAnaesthesia duration summary (mins):\n")
 print(summary(anaesthesia_events_clean$anaesthesia_duration_mins))
 
 # ============================================================
-# 7B. ANAESTHESIA ASSESSMENT SDEs — ASA STATUS & PROCEDURE URGENCY
-#
-# Joins directly onto operations via anae_CSN_id (SDE file) =
-# ANAESTHESIA_CSN_ID (operations, raw) — a clean 100% match
-# (4,417/4,417), so no bridge via anaesthesia_events_clean is needed
-# here, unlike the LDA epidural CSN mismatch handled below.
+# 7B. Anaesthesia assessment: ASA grade
 # ============================================================
+# Joins to operations via anae_CSN_id = ANAESTHESIA_CSN_ID.
 
 anaesthesia_ax_clean <- anaesthesia_ax_sdes |>
   left_join(
@@ -882,44 +718,24 @@ anaesthesia_ax_clean <- anaesthesia_ax_sdes |>
   ) |>
   mutate(
     asa_grade = str_extract(ASA_status, "\\d"),
-    asa_grade = factor(asa_grade, levels = as.character(1:5), ordered = TRUE),
-    proc_urgency = factor(
-      str_to_lower(procedure_urgency),
-      levels = c("elective", "expedited", "urgent", "immediate"),
-      ordered = TRUE
-    ),
-    # NEW: binary collapse — anything not elective is emergency
-    urgency_binary = case_when(
-      proc_urgency == "elective"                              ~ "elective",
-      proc_urgency %in% c("expedited", "urgent", "immediate")  ~ "emergency",
-      TRUE                                                      ~ NA_character_
-    )
+    asa_grade = factor(asa_grade, levels = as.character(1:5), ordered = TRUE)
   )
 
-cat("\nUrgency (binary) distribution:\n")
-print(table(anaesthesia_ax_clean$urgency_binary, useNA = "always"))
+cat("\nASA grade distribution:\n")
+print(table(anaesthesia_ax_clean$asa_grade, useNA = "always"))
 
 # ============================================================
-# 7C. LDA CATHETERS (EPIDURAL & URETHRAL)
-#
-# Both sheets use a far-future sentinel (~2157-11-19) in
-# removal_instant to mean "removal not documented" rather than NA.
-# Converted to an explicit flag + NA below — otherwise duration
-# calculations downstream would silently produce ~131-year durations.
-#
-# Separately, a small number of rows (19 epidural, unchecked for
-# urethral) have placement_instant missing while removal_instant is
-# genuine — flagged as placement_not_documented rather than dropped,
-# since these rows still confirm the catheter existed.
-#
-# Note: the LDA epidural and epidural assessment tables cap at
-# ~2026-05-15/18 in this data refresh, unlike every other table,
-# which extends to mid-July 2026. This is a genuine gap in the
-# source extract rather than a processing artefact here.
+# 7C. LDA catheters (epidural and urethral)
 # ============================================================
+# Both sheets use a far-future sentinel date (year > 2100) in
+# removal_instant for "removal not documented". It is converted to NA
+# with an explicit flag, otherwise durations would be about 130 years.
+# Rows with no placement time but a genuine removal time are flagged
+# (placement_not_documented) rather than dropped, since they still
+# confirm that a catheter existed.
 
 lda_epidural_clean <- lda_epidural |>
-  rename(PAT_ENC_CSN_ID = pat_enc_CSN_id) |>   # standardise naming — raw table uses inconsistent casing
+  rename(PAT_ENC_CSN_ID = pat_enc_CSN_id) |>   # raw column name has inconsistent casing
   mutate(
     placement_not_documented = is.na(placement_instant),
     removal_not_documented   = year(removal_instant) > 2100,
@@ -927,7 +743,7 @@ lda_epidural_clean <- lda_epidural |>
   )
 
 lda_urethral_clean <- lda_urethral |>
-  rename(PAT_ENC_CSN_ID = pat_enc_CSN_id) |>   # same fix — confirm this table has the identical column name first
+  rename(PAT_ENC_CSN_ID = pat_enc_CSN_id) |>
   mutate(
     placement_not_documented = is.na(placement_instant),
     removal_not_documented   = year(removal_instant) > 2100,
@@ -956,8 +772,7 @@ lda_urethral_clean |>
   ) |>
   print()
 
-# LDA epidural assessments — no sentinel/duration fields to fix,
-# just carried through as-is for now
+# Epidural assessments need no cleaning
 lda_epidural_assess_clean <- lda_epidural_assess
 
 cat("\nLDA Epidural Assess clean:", nrow(lda_epidural_assess_clean), "rows\n")
@@ -968,16 +783,6 @@ cat("\nLDA Epidural Assess clean:", nrow(lda_epidural_assess_clean), "rows\n")
 
 pain_scores_clean <- pain_scores |>
   mutate(
-    dow     = wday(score_time, label = TRUE, week_start = 1),
-    weekend = ifelse(dow %in% c("Sat", "Sun"), "Weekend", "Weekday"),
-    pain_category = case_when(
-      score_value == 0  ~ "No pain",
-      score_value <= 3  ~ "Mild (1-3)",
-      score_value <= 6  ~ "Moderate (4-6)",
-      score_value >= 7  ~ "Severe (7-10)"
-    )
-  ) |>
-  mutate(
     pain_score_shift = future_map_dbl(
       score_time,
       ~ match_date_to_shift_number(.x, shifts),
@@ -986,13 +791,9 @@ pain_scores_clean <- pain_scores |>
   )
 
 cat("Pain scores clean:", nrow(pain_scores_clean), "rows\n")
-cat("\nPain category distribution:\n")
-print(table(pain_scores_clean$pain_category))
-cat("\nWeekend distribution:\n")
-print(table(pain_scores_clean$weekend))
 
 # ============================================================
-# 9. ADD CASE TYPE TO ADMISSIONS
+# 9. CASE TYPE (surgical if any operation is recorded for the admission)
 # ============================================================
 
 admissions_clean <- admissions_clean |>
@@ -1070,7 +871,7 @@ saveRDS(intraop_mar_clean,
 toc()
 cat("\nAll cleaned tables saved to 1 - data/3 - processed_data/\n")
 cat("\nFiles saved:\n")
-list.files("1 - data/3 - processed_data/")
+print(list.files("1 - data/3 - processed_data/"))
 
-# Reset to sequential processing
+plan(sequential)
 plan(sequential)

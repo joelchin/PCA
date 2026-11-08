@@ -1,42 +1,24 @@
-# 15 — Rotation Analysis
-# Paediatric PCA Study
-# Addenbrooke's Hospital
+# ============================================================
+# 15 - Opioid rotation analysis (Table 4)
+# ============================================================
+# Builds the rotation table of the manuscript:
+#   tbl4a     (A) rotation-away rate by drug, all episodes
+#   ft4b      (B) destination of rotation (origin drug -> destination drug)
+#   ft4c      (C) covariate-adjusted odds ratio of rotation-away,
+#             oxycodone vs morphine, from Firth-corrected logistic
+#             regression on the pre-match eligible pool (psm_data): the
+#             matched sample has too few events to support the full
+#             covariate set
+#   ft4_multi multiple rotations within an admission (not a manuscript
+#             table; its figures are quoted in the Results text)
 #
-# Extracted from 16_publication_tables.R into its own script, since
-# rotation analysis is conceptually distinct from Tables 1-4 (all
-# PSM/descriptive-population content) and had grown large enough to
-# deserve separation.
+# Rotation-away means a later episode in the same admission used a
+# different drug. The chart-reviewed reasons for rotation are reported
+# in the Results text, not here.
 #
-# Builds Table 5 in four panels:
-#   5a — rotation-away rate by drug, global (all episodes, all drugs)
-#   5b — rotation destination (origin drug -> destination drug)
-#   5c — multi-rotation summary (>=2 genuine transitions within a
-#        single admission), using run-length encoding to correctly
-#        distinguish genuine leave-and-return sequences from trivial
-#        same-drug repetition (see script comments below for detail)
-#   5d — covariate-adjusted rotation-away odds ratio (oxycodone vs
-#        morphine), computed on the pre-match eligible pool
-#        (psm_data) rather than the matched pairs, due to too few
-#        events in the matched sample alone to support a ~20-covariate
-#        model (the matched pair count and event count are computed
-#        from matched_data and printed in the caption, not hardcoded)
-#
-# Produces: tbl5 (gtsummary object, panel 5a), ft5b, ft5c, ft5d
-# (flextable objects, panels 5b/5c/5d) — consumed by
-# 16_publication_tables.R for the Word export. Run this BEFORE
-# 16_publication_tables.R, and AFTER 09_comparative_psm.R in the same
-# session (it needs psm_data and matched_data).
-#
-# CHANGED (Oct 2026): every number quoted in the table footnotes and
-# captions (episode counts, ketamine-to-morphine durations, the top
-# return sequence and its n, matched pair and event counts) is now
-# computed live from the data in this script, not typed in. Previously
-# several were hardcoded and could drift from the data. Neonates are
-# no longer excluded upstream (script 10), so the eligible pool used
-# for Panel D includes any eligible neonates.
-#
-# Deliberately excludes: the chart-reviewed rotation REASONS, which
-# are reported in the Results prose, not here.
+# Run after 09_comparative_psm.R in the same R session (needs psm_data
+# and matched_data) and before 12_publication_tables.R. Every number in
+# the captions and footnotes is computed from the data.
 # ============================================================
 
 library(tidyverse)
@@ -57,18 +39,9 @@ ft_theme <- function(ft) {
     set_table_properties(width = 1, layout = "autofit")
 }
 
-cat("============================================================\n")
-cat("SCRIPT 15 - ROTATION ANALYSIS\n")
-cat("============================================================\n\n")
-
-#
-# Purely descriptive — full cohort, no PSM/matched content, no
-# chart-reviewed reasons (kept separate deliberately, and reported as
-# prose in Results/Discussion instead). Panels: rotation-away rate by
-# drug, and destination (what drug people rotate to from each origin
-# drug).
 # ============================================================
-cat("Building Table 5 — rotation, global descriptive...\n")
+# Panels A and B: all episodes, descriptive
+# ============================================================
 
 rotation_data <- pca_episodes_flagged |>
   arrange(PAT_ENC_CSN_ID, episode_start) |>
@@ -89,7 +62,7 @@ rotation_data <- pca_episodes_flagged |>
                                       "Morphine + ketamine", "Fentanyl"))
   )
 
-# ---- Panel A: rotation-away rate by drug ----
+# Panel A: rotation-away rate by drug
 tbl5_rate <- rotation_data |>
   select(drug, rotated_away_from) |>
   mutate(rotated_away_from = factor(rotated_away_from, levels = c(FALSE, TRUE),
@@ -111,7 +84,7 @@ tbl5_rate <- rotation_data |>
   ) |>
   bold_labels()
 
-# ---- Panel B: destination cross-tab (rotations only) ----
+# Panel B: destination (rotations only)
 destination_summary <- rotation_data |>
   filter(rotated_away_from == TRUE) |>
   count(drug, next_drug_rot) |>
@@ -122,27 +95,22 @@ destination_summary <- rotation_data |>
   select(drug, next_drug_rot, cell) |>
   pivot_wider(names_from = next_drug_rot, values_from = cell, values_fill = "—")
 
-cat("\nTable 5, Panel B (destination) — raw data for manual insertion:\n")
+cat("\nPanel B (destination):\n")
 print(destination_summary)
-cat("\n(Panel B built as a plain data frame above, not a gtsummary\n")
-cat("object — cross-tab structure doesn't map cleanly to tbl_summary.\n")
-cat("Format as a simple flextable below.)\n\n")
+cat("\n")
 
-ft5b <- destination_summary |>
+ft4b <- destination_summary |>
   rename(`Origin drug` = drug) |>
   flextable() |>
   ft_theme() |>
-  set_caption("Table 5b. Rotation destination (origin drug -> destination drug), n (%)")
+  set_caption("Table 4B. Rotation destination (origin drug -> destination drug), n (%)")
 
-# ---- Live numbers for the Table 5a footnote ----------------------
-# (previously typed into the footnote; now computed from the data)
+# Numbers for the Panel A footnote
 n_mk  <- sum(rotation_data$drug == "Morphine + ketamine")
 n_fen <- sum(rotation_data$drug == "Fentanyl")
 
-# Duration of the origin episode, morphine+ketamine -> morphine
-# transitions vs all other rotation types. Verify that this
-# reproduces the figures quoted in the manuscript (142 h vs 38.8 h,
-# p<0.001); if it does not, the manuscript must follow this output.
+# Duration of the origin episode: morphine+ketamine -> morphine
+# transitions vs all other rotation types
 rot_dur <- rotation_data |>
   filter(rotated_away_from, !is.na(episode_duration_hrs)) |>
   mutate(mk_to_morphine = drug == "Morphine + ketamine" & next_drug_rot == "Morphine")
@@ -172,8 +140,8 @@ if (any(rot_dur$mk_to_morphine) && any(!rot_dur$mk_to_morphine)) {
   mk_footnote_txt <- "(morphine+ketamine to morphine duration comparison not available in this run)."
 }
 
-tbl5 <- tbl5_rate |>
-  modify_caption(sprintf("**Table 5a.** Rotation-away rate by drug, all episodes (n=%d)",
+tbl4a <- tbl5_rate |>
+  modify_caption(sprintf("**Table 4A.** Rotation-away rate by drug, all episodes (n=%d)",
                          nrow(rotation_data))) |>
   modify_footnote(
     all_stat_cols() ~ paste0(
@@ -185,12 +153,9 @@ tbl5 <- tbl5_rate |>
     )
   )
 
-# ---- Panel C: multi-rotation summary (corrected, RLE-based) ----
-# Uses run-length encoding to collapse consecutive same-drug episodes
-# before counting transitions/returns, avoiding a bug in an earlier
-# version of this check that wrongly flagged simple same-drug
-# repetition (e.g. "morphine, morphine, morphine") as a "return"
-# pattern with no rotation ever having occurred.
+# Multiple rotations within an admission. Run-length encoding collapses
+# consecutive episodes on the same drug before counting transitions and
+# returns, so repeated documentation of one drug is not a rotation.
 
 multirotation_sequences <- pca_episodes_flagged |>
   arrange(PAT_ENC_CSN_ID, episode_start) |>
@@ -225,26 +190,21 @@ multirotation_summary <- tibble(
   )
 )
 
-ft5c <- multirotation_summary |>
+ft4_multi <- multirotation_summary |>
   flextable() |>
   ft_theme() |>
-  set_caption("Table 5c. Multiple rotations within a single admission") |>
+  set_caption("Multiple rotations within a single admission") |>
   add_footer_lines(
     sprintf(
-      "Sequences collapsed by run-length encoding (consecutive episodes on the same drug counted once) before assessing transitions and returns, so repeated documentation of the same drug is not counted as a rotation. The most common return pattern in this run was %s (n=%d); if this is morphine -> morphine+ketamine -> morphine it is consistent with temporary ketamine augmentation during a complex pain course followed by de-escalation back to morphine alone, rather than treatment-failure rotation (see Table 5a footnote).",
+      "Sequences collapsed by run-length encoding (consecutive episodes on the same drug counted once) before assessing transitions and returns. The most common return pattern was %s (n=%d).",
       top_return_sequence$seq_str, top_return_sequence$n)
   )
 
-cat("Table 5 (including Panel C) built\n\n")
+cat("Panels A and B and the multiple-rotation summary built\n\n")
 
 # ============================================================
-# HEADLINE SUMMARY — key top-line numbers for Results prose
+# Headline rotation numbers (quoted in the Results text)
 # ============================================================
-
-cat("\n")
-cat("############################################################\n")
-cat("# HEADLINE ROTATION NUMBERS\n")
-cat("############################################################\n\n")
 
 n_total_episodes <- nrow(pca_episodes_flagged)
 n_total_rotations <- sum(rotation_data$rotated_away_from)
@@ -260,47 +220,20 @@ cat(sprintf("Admissions with >=1 genuine rotation:              %d (%.1f%%)\n",
             100*mean(multirotation_sequences$n_genuine_transitions >= 1)))
 cat(sprintf("Admissions with >=2 genuine rotations:             %d (%.1f%%)\n",
             n_multi, 100*n_multi/nrow(multirotation_sequences)))
-cat(sprintf("  Of those, showing a return-to-prior-drug pattern: %d (%.1f%%)\n",
+cat(sprintf("  Of those, with a return to a prior drug:          %d (%.1f%%)\n",
             n_return, 100*n_return/n_multi))
 cat(sprintf("  Most common return sequence: \"%s\" (n=%d)\n\n",
             top_return_sequence$seq_str, top_return_sequence$n))
 
-cat("--- Ready-to-use Results sentence ---\n\n")
-cat(sprintf(
-  paste0(
-    "\"Rotation away from the index opioid occurred in %d of %d episodes ",
-    "(%.1f%%) across the full cohort. Of %d admissions, %d (%.1f%%) involved ",
-    "more than one rotation; of these, %d (%.1f%%) showed a return to a ",
-    "previously-used drug, most commonly %s (n=%d).\"\n\n"
-  ),
-  n_total_rotations, n_total_episodes, pct_total_rotations,
-  nrow(multirotation_sequences),
-  n_multi, 100*n_multi/nrow(multirotation_sequences),
-  n_return, 100*n_return/n_multi,
-  top_return_sequence$seq_str, top_return_sequence$n
-))
-
 # ============================================================
-# PANEL D — COVARIATE-ADJUSTED ROTATION-AWAY OR (PRE-MATCH POOL)
+# Panel C: covariate-adjusted rotation-away odds ratio
 # ============================================================
-# Added Oct 2026. Runs on the PRE-MATCH ELIGIBLE POOL (psm_data from
-# 09_comparative_psm.R; pool sizes are printed by script 10 and below),
-# NOT the matched sample. Reasoning: the matched sample has too few
-# rotation-away events to trust a ~20-covariate model even with Firth
-# correction (roughly 1 event per covariate). The pre-match pool is
-# ~5x larger, still eligibility-restricted (same criteria as matching
-# itself) and uses the identical covariate formula, so confounding
-# control is preserved without starving the model of events. This is
-# the standard fallback when a matched sample's outcome is too sparse
-# for within-match regression: adjust via regression on the full
-# eligible pool instead of restricting further.
-#
-# Neonates are no longer excluded upstream, so this pool includes any
-# eligible neonates.
-#
-# treated == 1 is oxycodone, treated == 0 is morphine (confirmed
-# from psm_data/matched_data construction in script 10) — so the OR
-# below is expressed as oxycodone vs morphine (reference).
+# Runs on the pre-match eligible pool (psm_data from 09_comparative_psm.R),
+# not the matched sample: the matched sample has roughly one rotation
+# event per covariate, too few for a model with this covariate set even
+# with Firth correction. The pool uses the same eligibility criteria and
+# the same covariates as the matching model. treated == 1 is oxycodone,
+# treated == 0 is morphine (reference).
 
 library(logistf)
 
@@ -318,11 +251,11 @@ cat("Pre-match eligible episodes with rotation flag joined:", nrow(eligible_rota
 cat("Missing rotation flag after join:", sum(is.na(eligible_rotation$rotated_away_from)), "\n")
 cat("Rotation-away events in eligible pool:",
     sum(eligible_rotation$rotated_away_from, na.rm = TRUE), "\n")
-cat("  — by arm:\n")
+cat("  by arm:\n")
 print(table(eligible_rotation$treated, eligible_rotation$rotated_away_from, useNA = "ifany"))
 
-# Same covariate set as psm_formula_expanded, with treated (drug) as
-# the predictor of interest rather than the matching target.
+# Same covariates as the matching model, with treated (drug) as the
+# predictor of interest
 rotation_formula <- rotated_away_from ~ treated + AGE + WEIGHT_KG + GENDER +
   proc_category + mode + had_peripheral + year + specialty_collapsed +
   asa_grade + had_remifentanil + had_intraop_ketamine + had_intraop_clonidine +
@@ -342,12 +275,11 @@ stopifnot(names(coef(rotation_model))[2] == "treated")
 cat("logistf (full model) took", round(difftime(Sys.time(), t_start, units = "mins"), 1), "min\n")
 
 cat("\n============================================================\n")
-cat("FIRTH-CORRECTED ROTATION-AWAY MODEL — PRE-MATCH ELIGIBLE POOL\n")
+cat("FIRTH-CORRECTED ROTATION-AWAY MODEL: PRE-MATCH ELIGIBLE POOL\n")
 cat("============================================================\n")
 print(summary(rotation_model))
 
-# Pull the treated coefficient specifically and exponentiate for the
-# OR + 95% CI — treated==1 (oxycodone) vs treated==0 (morphine, ref).
+# Odds ratio and 95% CI for treated (oxycodone vs morphine)
 treated_idx <- 2
 or_estimate <- exp(coef(rotation_model)[treated_idx])
 or_ci <- exp(c(rotation_model$ci.lower[treated_idx], rotation_model$ci.upper[treated_idx]))
@@ -360,8 +292,7 @@ cat(sprintf("  OR = %.3f (95%% CI %.3f-%.3f)\n", or_estimate, or_ci[1], or_ci[2]
 cat(sprintf("  p  = %.4f\n", rotation_model$prob[treated_idx]))
 
 # ============================================================
-# MATCHED-SAMPLE PAIR AND EVENT COUNTS FOR THE TABLE 5d CAPTION
-# Computed from matched_data (script 10), not hardcoded.
+# Matched pair and event counts for the Panel C caption
 # ============================================================
 if (exists("matched_data")) {
   n_pairs_cap <- sum(matched_data$treated == 1)
@@ -384,11 +315,8 @@ if (exists("matched_data")) {
 }
 
 # ============================================================
-# BUILD ft5d — flextable object for 16_publication_tables.R
+# Panel C table
 # ============================================================
-# A single-row summary table, formatted consistently with the other
-# Table 5 panels (as_flex_table |> ft_theme() pattern used throughout
-# 16_publication_tables.R).
 
 tbl5d_data <- tibble::tibble(
   Comparison = "Oxycodone vs Morphine (reference)",
@@ -400,26 +328,17 @@ tbl5d_data <- tibble::tibble(
   Population = sprintf("Pre-match eligible pool (n=%d)", nrow(eligible_rotation))
 )
 
-ft5d <- flextable::flextable(tbl5d_data) |>
+ft4c <- flextable::flextable(tbl5d_data) |>
   ft_theme() |>
   flextable::set_caption(
     caption = paste0(
-      "Table 5d. Covariate-adjusted rotation-away odds ratio ",
+      "Table 4C. Covariate-adjusted rotation-away odds ratio ",
       "(Firth-corrected logistic regression, same covariates as ",
       "propensity-score matching). Estimated on the pre-match ",
       "eligible pool rather than ", cap_matched_txt
     )
   )
 
-cat("\nft5d built — ready for 16_publication_tables.R\n\n")
+cat("\nPanel C table built\n\n")
 
-# The figure printed by this run is the one to cite. It supersedes the
-# earlier candidate figures that appeared in draft material (0.124 and
-# ~0.19, and 0.084 from the run before neonates were no longer
-# excluded), which were computed under different, no-longer-current
-# formulations and should not be cited. State explicitly in
-# Methods/Results that this OR describes the pre-match eligible pool,
-# not the matched pairs, so a reader isn't confused about which
-# population this OR relates to relative to Table 3's matched sample.
-
-cat("Script 15 complete - tbl5, ft5b, ft5c, ft5d ready for 16_publication_tables.R\n\n")
+cat("Script 11 complete: tbl4a, ft4b, ft4_multi and ft4c are ready for 12_publication_tables.R\n")

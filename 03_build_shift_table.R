@@ -1,43 +1,22 @@
 # ============================================================
-# 03 — Build Master Shift-Level Analysis Table
-# Paediatric PCA Study
-# Addenbrooke's Hospital
+# 03 - Build the shift-level table and episode metrics
 # ============================================================
+# Produces two tables used by the downstream scripts:
 #
-# Purpose:
-# Builds two master tables used by all downstream analysis scripts:
+#   episode_shift_table.rds  one row per 12-hour shift per episode
+#   episode_metrics.rds      one row per episode, with outcome summaries
 #
-# 1. episode_shift_table.rds
-#    One row per 12-hour shift per active PCA episode
-#    Used for: temporal analyses, side effect attribution,
-#              pain score sequencing
-#
-# 2. episode_metrics.rds
-#    One row per episode — derived outcome summaries
-#    Used for: main comparisons, PSM, subgroup analyses
-#
-# Side effect window rationale:
-# Primary analysis uses shift 2 onwards — excludes shift 1
-# which reflects prophylactic prescribing at induction
-# rather than treatment of established opioid side effects.
-# Full episode and shift-1-only versions retained for
-# sensitivity analysis and to demonstrate prophylaxis effect.
-# No fixed time window used — episode-based attribution is
-# more appropriate for PCA-induced side effects which persist
-# throughout the episode regardless of duration.
-#
-# Pipeline order:
-# 1. source("01_load_raw_data.R")
-# 2. source("02_clean_data.R")
-# 3. source("03_build_shift_table.R")   <- this script
-# 4. source("04_derive_episode_flags.R")
-# 5. source("05_load_processed_data.R")
-#
-# Runtime: ~10 minutes
+# Side-effect windows: window A is the full episode, window B excludes
+# the first shift (which mostly reflects prophylactic prescribing at
+# induction), and window C is the first shift only. These are
+# descriptive episode summaries; the antiemetic, antipruritic and
+# naloxone outcomes reported in the manuscript are defined in
+# 04_derive_episode_flags.R.
 # ============================================================
 
 library(tidyverse)
 library(lubridate)
+source(file.path(getOption("pca_code_dir", "."), "drug_lists.R"))
 
 # ============================================================
 # LOAD CLEANED DATA
@@ -47,26 +26,18 @@ admissions_clean         <- readRDS("1 - data/3 - processed_data/admissions_clea
 pca_episodes             <- readRDS("1 - data/3 - processed_data/pca_episodes.rds")
 non_pca_mar_clean        <- readRDS("1 - data/3 - processed_data/non_pca_mar_clean.rds")
 pain_scores_clean        <- readRDS("1 - data/3 - processed_data/pain_scores_clean.rds")
-operations_clean         <- readRDS("1 - data/3 - processed_data/operations_clean.rds")
 anaesthesia_events_clean <- readRDS("1 - data/3 - processed_data/anaesthesia_events_clean.rds")
 shifts                   <- readRDS("1 - data/3 - processed_data/1_shifts.rds")
 
 cat("All cleaned data loaded\n")
 
 # ============================================================
-# STEP 1 — EXPAND EPISODES TO ONE ROW PER ACTIVE SHIFT
-#
-# shift_in_episode = temporal index within episode
-#   1 = first shift, 2 = second shift etc.
-#
-# shift_index_from_pca_start = index anchored to PCA start
-#   0 = shift PCA started
-#   negative = pre-PCA shifts (not used in main analysis)
-#   positive = post-PCA start shifts
-#
-# Note: shift is the unit of clinical time — 12 hours
-# Used for temporal sequencing NOT day/night classification
+# STEP 1 - Expand episodes to one row per shift
 # ============================================================
+# shift_in_episode: 1 = first shift of the episode.
+# shift_index_from_pca_start: 0 = shift in which the episode started.
+# A shift is a 12-hour block used for temporal sequencing, not for
+# day/night classification.
 
 cat("\nBuilding episode-shift expansion...\n")
 
@@ -91,18 +62,13 @@ episode_shifts <- pca_episodes |>
   unnest(shift_number) |>
   group_by(PAT_ENC_CSN_ID, episode_id) |>
   mutate(
-    # Position within episode (1 = first shift)
     shift_in_episode = row_number(),
-    # Index anchored to PCA start
-    # 0 = shift PCA started
     shift_index_from_pca_start = shift_number - episode_start_shift,
     shift_phase = case_when(
       shift_index_from_pca_start == 0 ~ "PCA_start_shift",
       shift_index_from_pca_start > 0  ~ "post_PCA_start",
       TRUE                            ~ "pre_PCA"
     ),
-    # Flag first shift — may reflect prophylactic prescribing
-    # rather than treatment of established opioid side effects
     is_first_shift = shift_in_episode == 1
   ) |>
   ungroup()
@@ -116,9 +82,7 @@ cat("Median shifts per episode:",
                        episode_shifts$episode_id))), "\n")
 
 # ============================================================
-# STEP 2 — JOIN SHIFT METADATA AND ANAESTHESIA STOP TIME
-# Anaesthesia stop retained for descriptive context only
-# Not used as primary analysis window filter
+# STEP 2 - Shift metadata and anaesthesia stop time (descriptive only)
 # ============================================================
 
 cat("\nJoining shift metadata and anaesthesia stop times...\n")
@@ -142,8 +106,6 @@ episode_shifts <- episode_shifts |>
   ) |>
   left_join(anaesthesia_stop_times, by = "PAT_ENC_CSN_ID") |>
   mutate(
-    # Hours from anaesthesia stop to start of this shift
-    # Retained for descriptive/sensitivity analyses
     hrs_from_anaesthesia_stop = as.numeric(
       difftime(shift_start, anaesthesia_stop, units = "hours")
     )
@@ -152,17 +114,12 @@ episode_shifts <- episode_shifts |>
 cat("Shift metadata and anaesthesia stop times joined\n")
 
 # ============================================================
-# STEP 3 — JOIN PAIN SCORES BY SHIFT
-#
-# Pain scores linked by shift number — temporal attribution
-# without requiring exact timestamp matching
-#
-# Data quality note:
-# Pain scores show 4-hourly temporal clustering (6am, 10am,
-# 2pm, 6pm, 10pm) confirming real-time documentation.
-# This was confirmed from raw timestamp distribution
-# independently of the shift system.
+# STEP 3 - Pain scores by shift
 # ============================================================
+# Scores are linked to shifts by shift number. Pain severity bands here
+# are shift-level descriptors (any score >=7, >=4, 1-3, >0); they are not
+# the pain outcomes reported in the manuscript, which are computed in
+# 04_derive_episode_flags.R.
 
 cat("\nJoining pain scores...\n")
 
@@ -201,22 +158,13 @@ cat("Shifts without pain assessment:",
     sum(episode_shifts$no_pain_assessment), "\n")
 
 # ============================================================
-# STEP 4 — JOIN SIDE EFFECT MARKERS BY SHIFT
-#
-# Attribution:
-# Drug given=TRUE during active episode shift only
-# inner_join ensures only episode-active shifts included
-# Preop, intraop, post-episode drugs automatically excluded
-#
-# Naloxone distinguished by formulation:
-# - low_dose_pruritus (40mcg) = pruritus proxy
-# - reversal_respiratory (400mcg) = key safety outcome
-#
-# Dexamethasone excluded:
-# - Repeated scheduled dosing (every 6-8hrs over days)
-# - Predominantly intraop prophylaxis or anti-inflammatory
-# - Inconsistent with PONV attribution
+# STEP 4 - Side-effect markers by shift
 # ============================================================
+# Only administrations (given == TRUE) falling in a shift of an active
+# episode are kept; the inner join drops pre-operative, intraoperative
+# and post-episode doses. Naloxone is split by formulation: 40
+# microgram = pruritus proxy, 400 microgram = respiratory reversal.
+# Dexamethasone is not in the antiemetic list (see drug_lists.R).
 
 cat("\nJoining side effect markers...\n")
 
@@ -226,8 +174,6 @@ side_effects_by_shift <- non_pca_mar_clean |>
     given == TRUE,
     !is.na(med_admin_shift)
   ) |>
-  # inner_join restricts to episode-active shifts only
-  # automatically excludes preop/intraop/post-episode drugs
   inner_join(
     episode_shifts |>
       select(PAT_ENC_CSN_ID, shift_number) |>
@@ -237,10 +183,8 @@ side_effects_by_shift <- non_pca_mar_clean |>
   ) |>
   group_by(PAT_ENC_CSN_ID, med_admin_shift) |>
   summarise(
-    antiemetic_given   = any(tolower(GENERIC_NAME) %in% c(
-      "ondansetron", "cyclizine", "metoclopramide",
-      "droperidol", "haloperidol"
-    )),
+    antiemetic_given   = any(tolower(GENERIC_NAME) %in%
+                               tolower(antiemetic_drugs)),
     antipruritic_given = any(
       tolower(GENERIC_NAME) == "chlorphenamine" |
         naloxone_type == "low_dose_pruritus"
@@ -288,12 +232,7 @@ cat("Shifts with naloxone reversal:",
     sum(episode_shifts$naloxone_reversal), "\n")
 
 # ============================================================
-# STEP 5 — JOIN LAXATIVES BY SHIFT
-#
-# Opioid-induced constipation proxy
-# Expected temporal pattern: increases with shift_in_episode
-# Early = pre-existing or non-opioid
-# Late = more likely opioid-induced
+# STEP 5 - Laxatives by shift (descriptive only)
 # ============================================================
 
 cat("\nJoining laxatives...\n")
@@ -328,7 +267,7 @@ episode_shifts <- episode_shifts |>
 cat("Laxatives joined\n")
 
 # ============================================================
-# STEP 6 — JOIN ANALGESICS BY SHIFT
+# STEP 6 - Co-analgesics by shift
 # ============================================================
 
 cat("\nJoining analgesics...\n")
@@ -373,7 +312,7 @@ episode_shifts <- episode_shifts |>
 cat("Analgesics joined\n")
 
 # ============================================================
-# STEP 7 — JOIN DEMOGRAPHICS
+# STEP 7 - Demographics
 # ============================================================
 
 cat("\nJoining demographics...\n")
@@ -385,41 +324,16 @@ episode_shifts <- episode_shifts |>
              WEIGHT_KG, GENDER, ADMITTING_SPECIALTY,
              case_type),
     by = "PAT_ENC_CSN_ID"
-  ) |>
-  left_join(
-    operations_clean |>
-      filter(primary_procedure == TRUE) |>
-      select(PAT_ENC_CSN_ID, proc_category) |>
-      distinct(PAT_ENC_CSN_ID, .keep_all = TRUE),
-    by = "PAT_ENC_CSN_ID"
   )
 
 cat("Demographics joined\n")
 
 # ============================================================
-# STEP 8 — DERIVE EPISODE-LEVEL METRICS
-#
-# Three side effect windows:
-#
-# Window A — Full episode (shift 1 onwards)
-#   Broadest — includes prophylactic shift 1 administrations
-#   Use for: sensitivity analysis, population burden
-#
-# Window B — Post-shift-1 (shift 2 onwards) ← PRIMARY
-#   Excludes shift 1 prophylactic prescribing at induction
-#   More likely to represent established opioid side effects
-#   Use for: primary outcome, main comparison
-#
-# Window C — Shift 1 only
-#   Captures prophylactic effect
-#   Use for: demonstrating prophylaxis inflation
-#   Difference between A and B shows prophylaxis contribution
-#
-# Three metric types per window:
-# 1. Binary: any administration during window
-# 2. Time to first: shift_in_episode at first administration
-# 3. Burden: proportion of shifts with administration
+# STEP 8 - Episode-level metrics
 # ============================================================
+# Three side-effect windows (A full episode, B shift 2 onwards,
+# C shift 1 only) and, for each, binary, time-to-first and
+# proportion-of-shifts summaries.
 
 cat("\nDeriving episode metrics...\n")
 
@@ -440,8 +354,7 @@ episode_metrics <- episode_shifts |>
     pct_shifts_severe         = mean(had_severe_pain) * 100,
     pct_shifts_moderate       = mean(had_moderate_pain) * 100,
     
-    # Time to pain control
-    # First shift where pain mild/absent AND assessment done
+    # First shift with an assessment and no score >=4
     first_controlled_shift = min(
       shift_in_episode[
         !had_moderate_pain &
@@ -451,9 +364,7 @@ episode_metrics <- episode_shifts |>
       na.rm = TRUE
     ),
     
-    # ---- WINDOW A: Full episode (shift 1 onwards) ----
-    # Includes prophylactic shift 1 — use for sensitivity only
-    
+    # ---- Window A: full episode ----
     any_antiemetic_full      = any(antiemetic_given),
     any_antipruritic_full    = any(antipruritic_given),
     any_naloxone_full        = any(naloxone_any),
@@ -476,10 +387,7 @@ episode_metrics <- episode_shifts |>
       shift_in_episode[naloxone_any], na.rm = TRUE
     ),
     
-    # ---- WINDOW B: Post-shift-1 (shift 2 onwards) ← PRIMARY ----
-    # Excludes shift 1 prophylactic prescribing at induction
-    # More likely to represent established opioid side effects
-    
+    # ---- Window B: shift 2 onwards ----
     any_antiemetic           = any(
       antiemetic_given[shift_in_episode > 1],
       na.rm = TRUE
@@ -535,10 +443,7 @@ episode_metrics <- episode_shifts |>
       na.rm = TRUE
     ),
     
-    # ---- WINDOW C: Shift 1 only ----
-    # Captures prophylactic effect at induction
-    # Difference between Window A and B = prophylaxis contribution
-    
+    # ---- Window C: shift 1 only ----
     any_antiemetic_shift1    = any(
       antiemetic_given[shift_in_episode == 1],
       na.rm = TRUE
@@ -563,7 +468,7 @@ episode_metrics <- episode_shifts |>
     
   ) |>
   
-  # Clean up Inf values where events never occurred
+  # Events that never occurred give Inf from min(); set to NA
   mutate(
     across(
       c(first_controlled_shift,
@@ -581,8 +486,8 @@ episode_metrics <- episode_shifts |>
 cat("Episode metrics derived\n")
 cat("Total episodes with metrics:", nrow(episode_metrics), "\n")
 
-# ---- Sanity check — compare windows ----
-cat("\nSide effect rates by drug — Window A (full episode):\n")
+# Side-effect rates by drug and window
+cat("\nSide effect rates by drug - window A (full episode):\n")
 episode_metrics |>
   group_by(drug) |>
   summarise(
@@ -599,7 +504,7 @@ episode_metrics |>
   ) |>
   print()
 
-cat("\nSide effect rates by drug — Window B (shift 2+ PRIMARY):\n")
+cat("\nSide effect rates by drug - window B (shift 2 onwards):\n")
 episode_metrics |>
   group_by(drug) |>
   summarise(
@@ -613,7 +518,7 @@ episode_metrics |>
   ) |>
   print()
 
-cat("\nShift 1 prophylaxis rates by drug — Window C:\n")
+cat("\nShift 1 rates by drug - window C:\n")
 episode_metrics |>
   group_by(drug) |>
   summarise(
@@ -628,7 +533,7 @@ episode_metrics |>
   print()
 
 # ============================================================
-# STEP 9 — SAVE BOTH TABLES
+# STEP 9 - Save
 # ============================================================
 
 dir.create("1 - data/3 - processed_data",
@@ -641,9 +546,9 @@ saveRDS(episode_metrics,
         "1 - data/3 - processed_data/episode_metrics.rds")
 
 cat("\nBoth tables saved:\n")
-cat("  episode_shift_table.rds —",
+cat("  episode_shift_table.rds:",
     nrow(episode_shifts), "rows\n")
-cat("  episode_metrics.rds —",
+cat("  episode_metrics.rds:",
     nrow(episode_metrics), "rows\n")
 cat("\nFiles in processed_data:\n")
-list.files("1 - data/3 - processed_data/")
+print(list.files("1 - data/3 - processed_data/"))

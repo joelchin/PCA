@@ -1,102 +1,29 @@
-# 16 — Publication Tables
-# Paediatric PCA Study
-# Addenbrooke's Hospital
+# ============================================================
+# 16 - Manuscript tables
+# ============================================================
+# Builds the manuscript tables as flextable objects and exports them to
+# one Word file:
+#   Table 1   patient and episode characteristics, all episodes
+#   Table 2   oxycodone patient and episode characteristics
+#   Table 3   primary outcomes in the propensity-matched cohort
+#   Table 4   opioid rotation (panels built in 11_rotation_analysis.R)
+#   Table S1  covariate balance before and after matching
+# It also prints the comparison of first-episode morphine NCA with
+# Howard et al. (2010), which is quoted in the Results text.
 #
-# Builds the manuscript's publication tables as flextable objects ready
-# for Word export (Table 1: cohort characteristics; Table 2: oxycodone
-# descriptive; Table 3: PSM balance; Table 4: PSM-matched comparative
-# outcomes; Table 5: rotation).
+# Run in the same R session after 09_comparative_psm.R and
+# 11_rotation_analysis.R: it needs psm_data, match_out and the Table 4
+# objects (tbl4a, ft4b, ft4c) from the session.
 #
-# REVISION NOTES (this version)
-#   Table 1  now reports line of therapy (1st/2nd/3rd/4th+, counted as
-#            distinct drug changes WITHIN an admission, matching the
-#            is_first_line flag), episodes per patient in the patient-level
-#            section, and a footnote stating that the global tables are
-#            descriptive and that comparative inference is on the matched
-#            (first-ever PCA/NCA episode, one-per-patient) cohort.
-#   Table 2  is now stacked like Table 1: patient-level section (one row per
-#            patient: age, weight, sex, age group) and episode-level section
-#            (mode, line of therapy, duration, procedure category, side
-#            effects, pain, consumption). The original by-PCA/NCA episode
-#            table is still built as tbl2_by_mode but is NOT exported; add
-#            it to the Word export if you want it.
-#   Howard   comparison applies ONLY Howard et al.'s stated criteria
-#            (morphine NCA after surgery, not a switch-in). Console summary
-#            only (informal anchor, not validation, not exported).
-#            Sensitivity pools: HOWARD_FAITHFUL.R.
-#   Table 4  footnote now states the population explicitly.
-#   Export   publication-style formatting (Arial 9 pt, three-line tables,
-#            8 pt footnotes, A4 narrow margins, page break between tables),
-#            stat-column headers that state the statistic instead of "N =",
-#            the stacked-table "Group" header blanked.
-#            Footnotes that cannot be attached to a stacked gtsummary table
-#            are written as text under the table instead.
-#
-#   EARLIER PASS (first-exposure cohort, medical oncology excluded)
-#   - Table S1 (tbl3): post-match specialty is now collapsed using the
-#     PRE-match specialty list (as in the matching model). Before, the
-#     n>=30 collapse was re-run inside the matched rows, which folded
-#     Urology and PAEDIATRICS into "Other specialty" and showed them as
-#     0 (0%).
-#   - Table S1 footnote: the balance statement is computed from match_out
-#     (maximum SMD, number of terms above 0.10, which terms) instead of a
-#     hardcoded "<0.10". match_out must be in the session (script 10).
-#   - Year is shown without thousands separator or decimals in Table S1.
-#   - Table 1, Table 3 (tbl4) and Notes wording now describe the matched
-#     cohort as each child's first-ever recorded PCA/NCA episode at this
-#     centre, medical oncology excluded.
-#   - Table 3 (tbl4) footnote: matched n and the flowsheet-linkage p-value
-#     are computed from the data, not hardcoded.
-#   - Study period in the title set to October 2014 to July 2026; the
-#     data range is printed to the console as a check.
-#
-#   THIS PASS (Oct 2026)
-#   - Footnotes shortened to match the manuscript (Tables 1, 2, 3 and S1):
-#     each now says what is needed to read the table and nothing more;
-#     rationale lives in the Methods.
-#   - Table 2 footnote: the number of excluded oxycodone episodes and the
-#     reasons (no recorded episode end time; undetermined PCA/NCA mode) are
-#     computed from the data. Previously "78 episodes with undetermined
-#     mode" and "1,276" were typed in; 78 is the whole-cohort unknown-mode
-#     count, not the oxycodone one.
-#   - Table 3 footnote: the sentence comparing matched naloxone counts with
-#     a full-cohort chart-reviewed figure is removed. The duplicate
-#     gtsummary footnote on the p-value column (test names) is removed,
-#     since the tests are named in the main footnote.
-#   - s4_surgical_keys (script 6) is checked at the top, so a missing
-#     object fails at the start rather than after the long build.
-#   - Neonates are no longer excluded upstream (script 10); nothing in
-#     this script depended on that.
-#
-# Methodological choices carried over from earlier versions:
-#
-#   Table 1's case type field is case_type_refined, not the original
-#   unrefined case_type.
-#
-#   Table 2 reports genuine efficacy metrics (peak pain score, time-weighted
-#   mean pain, consumption) rather than the SI project's osteotomy-derived
-#   metrics. Its procedure-category breakdown uses proc_category_display
-#   (surgical categories individually, non-surgical collapsed to one row).
-#   The composite side-effect outcome is not shown; paracetamol/NSAID
-#   shift rows are not included (paracetamol co-prescribing ~100%).
-#
-#   Table 4 reports antiemetic, antipruritic and naloxone reversal as
-#   independent outcomes (no composite).
-#
-#   pre_match, post_match and table4_matched_outcomes are built directly
-#   from the live pipeline objects (psm_data, matched_data) rather than
-#   reconstructed from saved keys, keeping population figures mechanically
-#   identical to 10_comparative_PSM.R. add_psm_covariates() is applied only
-#   to post_match (psm_data already carries those covariates).
-#
-#   Table 5 draws on four objects from 15_rotation_analysis.R (tbl5, ft5b,
-#   ft5c, ft5d). ft5d is the covariate-adjusted rotation-away odds ratio,
-#   computed on the pre-match eligible pool.
-#
-#   case_type_refined is reported at patient level in Table 1.
-#
-#   Naloxone-reversal factor() calls specify levels = c(FALSE, TRUE)
-#   explicitly because oxycodone's S4 population has zero reversal events.
+# Notes
+#   - The matched outcome data are rebuilt below from psm_matched_keys.rds
+#     and pca_episodes_flagged (not taken from match.data()), so that all
+#     outcome columns come from the same flagged episode table.
+#   - Footnote counts are computed from the data.
+#   - Table 2 reports peak pain, time-weighted mean pain and consumption;
+#     Table 3 reports antiemetic, antipruritic and naloxone reversal as
+#     separate outcomes (no composite).
+#   - Spelling in the Word file is converted to US English at export.
 # ============================================================
 required_pkgs <- c("gtsummary", "flextable", "officer", "labelled")
 missing_pkgs <- required_pkgs[!sapply(required_pkgs, requireNamespace, quietly = TRUE)]
@@ -111,11 +38,7 @@ library(tidyverse)
 library(gtsummary)
 library(flextable)
 library(officer)
-library(MatchIt)   # needed so summary() works on match_out (S3 method for class "matchit")
-
-cat("============================================================\n")
-cat("ANALYSIS 11 — PUBLICATION TABLES\n")
-cat("============================================================\n\n")
+library(MatchIt)   # summary() on match_out
 
 stopifnot(
   exists("pca_episodes_flagged"),
@@ -126,25 +49,36 @@ stopifnot(
   exists("intraop_mar_clean"),
   exists("anaesthesia_events_clean"),
   exists("anaesthesia_ax_clean"),
-  exists("pain_scores_clean"),
-  exists("s4_surgical_keys")   # from 6_cohort_classification.R; used in the surgical-vs-medical check
+  exists("pain_scores_clean")
 )
 
-# psm_data, matched_data and match_out must exist in-session (built by
-# 10_comparative_PSM.R, run earlier in the same session, NOT loaded
-# from a saved .rds).
+# psm_data and match_out come from 09_comparative_psm.R and must be in the
+# session (not restored from a saved workspace)
 stopifnot(
   exists("psm_data"),
-  exists("matched_data"),
   exists("match_out")
 )
 if (!inherits(match_out, "matchit")) {
   stop("match_out is not a MatchIt object (class: ", paste(class(match_out), collapse = "/"),
-       "). Re-run 10_comparative_PSM.R in THIS session; do not rely on objects restored from a saved workspace.")
+       "). Re-run 09_comparative_psm.R in this session.")
 }
 
-stopifnot("matched_data must be the version rebuilt by 13_subgroups.R (needs episode_duration_hrs.x)" =
-            "episode_duration_hrs.x" %in% names(matched_data))
+# Matched outcome data: matched episodes from the flagged episode table
+# with pair identifiers and the episode-level metrics. Columns present in
+# both tables (e.g. episode_duration_hrs) get .x/.y suffixes and are
+# resolved below.
+matched_keys <- readRDS("1 - data/3 - processed_data/psm_matched_keys.rds")
+matched_data <- pca_episodes_flagged |>
+  semi_join(matched_keys, by = c("PAT_ENC_CSN_ID", "episode_id")) |>
+  left_join(
+    matched_keys |> select(PAT_ENC_CSN_ID, episode_id, treated, subclass, distance),
+    by = c("PAT_ENC_CSN_ID", "episode_id")
+  ) |>
+  left_join(
+    episode_metrics |> select(-drug, -mode),
+    by = c("PAT_ENC_CSN_ID", "episode_id")
+  )
+stopifnot("episode_duration_hrs.x" %in% names(matched_data))
 
 stopifnot("case_type_refined" %in% names(pca_episodes_flagged))
 
@@ -152,8 +86,6 @@ stopifnot(
   "peak_pain_score" %in% names(pca_episodes_flagged),
   "time_weighted_mean_pain" %in% names(pca_episodes_flagged)
 )
-cat("Pain score outcomes confirmed pre-computed (from 4_flags.R):\n")
-cat("  peak_pain_score, time_weighted_mean_pain\n\n")
 
 # ============================================================
 # FLEXTABLE THEME + FOOTNOTE HELPER
@@ -210,7 +142,7 @@ attach_footnote <- function(tbl, text) {
   }
 }
 
-# ---- Denominator helpers: footnotes carry computed n, never typed n ----
+# Denominator helpers: footnotes carry computed n, never typed n
 n_ev   <- function(x) sum(!is.na(x))
 fmt_n  <- function(x) formatC(x, big.mark = ",", format = "d")
 and_list <- function(x) {
@@ -229,11 +161,10 @@ denom_sentence <- function(df, vars, total) {
 # ============================================================
 # SHARED BUILDING BLOCKS: line of therapy and true patient ID
 # ============================================================
-# drug_line_number counts DISTINCT DRUG CHANGES within an admission
-# (PAT_ENC_CSN_ID), so three consecutive morphine episodes are all
-# "1st line" and a switch to oxycodone afterwards is "2nd line". Grouped
-# by admission to match is_first_line / is_rotation in 4_flags.R, so
-# "1st line" is identical to is_first_line == TRUE.
+# drug_line_number counts distinct drug changes within an admission, so
+# three consecutive morphine episodes are all "1st line" and a switch to
+# oxycodone afterwards is "2nd line". "1st line" is identical to
+# is_first_line == TRUE in 04_derive_episode_flags.R.
 pca_line_lookup <- pca_episodes_flagged |>
   arrange(PAT_ENC_CSN_ID, episode_start) |>
   group_by(PAT_ENC_CSN_ID) |>
@@ -263,10 +194,9 @@ line_label <- function(x) {
 }
 
 # ============================================================
-# TABLE 1 — COHORT DEMOGRAPHICS
-# case_type_refined at PATIENT-level.
+# TABLE 1 - Patient and episode characteristics (all episodes)
 # ============================================================
-cat("Building Table 1 — cohort demographics...\n")
+cat("Building Table 1...\n")
 
 t1_footnote <- paste0(
   "Descriptive summary of all episodes, including rotations and later episodes; not used for between-drug comparison (Table 3 uses the matched cohort). ",
@@ -286,7 +216,7 @@ patients <- pca_episodes_flagged |>
     )),
     case_type_refined = factor(case_type_refined, levels = c("surgical", "medical"),
                                labels = c("Surgical", "Medical")),
-    GENDER = factor(GENDER, levels = c("Male", "Female"))
+    GENDER = factor(GENDER, levels = c("Female", "Male"))
   )
 
 cat("Patients before dedup (by admission, PAT_ENC_CSN_ID):",
@@ -373,43 +303,41 @@ t1_fn_ok <- r1$ok
 cat("Table 1 built\n\n")
 
 # ============================================================
-# SUPPLEMENTARY — MORPHINE NCA vs HOWARD ET AL. 2010
-# Applies ONLY Howard's stated criteria: morphine NCA after (major)
-# surgery, excluding patients changed to NCA from another technique.
-# Console summary only (informal anchor for outcome definitions); not
-# exported to Word and not a manuscript table.
-# Full comparison, sensitivity pools and age bands: HOWARD_FAITHFUL.R
+# Comparison with Howard et al. (2010): morphine NCA
+# ============================================================
+# Applies only Howard's stated criteria: morphine NCA after surgery,
+# excluding patients changed to NCA from another technique (here, the
+# first episode of the admission). Antiemetic and antipruritic are
+# administration-based, whereas Howard recorded symptoms, so this is an
+# informal anchor for the outcome definitions, not validation. Printed
+# to the console; not exported to Word.
 # ============================================================
 cat("============================================================\n")
-cat("SUPPLEMENTARY — MORPHINE NCA vs HOWARD ET AL. 2010 (Howard criteria only)\n")
-cat("(descriptive context only; definitions differ — see Discussion)\n")
+cat("MORPHINE NCA COMPARED WITH HOWARD ET AL. (2010)\n")
 cat("============================================================\n\n")
 
 morphine_nca <- pca_episodes_flagged |>
   filter(drug == "morphine", mode == "NCA", is_first_episode,
          case_type_refined == "surgical")
 
-# Unfiltered antiemetic flags from the raw administrations (closest
-# administration analogue of Howard's "nausea or vomiting on one or more
-# occasions"); 2+ calendar days is a proxy for the "more than one
-# postoperative day" arm of their severe PONV definition.
-have_ae <- exists("antiemetic_events")
-if (have_ae) {
-  ae_flags <- morphine_nca |>
-    select(PAT_ENC_CSN_ID, episode_id, episode_start, episode_end) |>
-    left_join(antiemetic_events, by = "PAT_ENC_CSN_ID", relationship = "many-to-many") |>
-    filter(!is.na(ADMIN_TIME), ADMIN_TIME >= episode_start, ADMIN_TIME <= episode_end) |>
-    group_by(PAT_ENC_CSN_ID, episode_id) |>
-    summarise(n_ae_days = n_distinct(as_date(ADMIN_TIME)), .groups = "drop")
-  morphine_nca <- morphine_nca |>
-    left_join(ae_flags, by = c("PAT_ENC_CSN_ID", "episode_id")) |>
-    mutate(any_antiemetic_during = !is.na(n_ae_days),
-           antiemetic_multiday = coalesce(n_ae_days, 0L) >= 2L)
-} else {
-  cat("antiemetic_events not found in session: antiemetic rows will show n/a\n")
-  morphine_nca <- morphine_nca |>
-    mutate(any_antiemetic_during = NA, antiemetic_multiday = NA)
-}
+# Any antiemetic during the episode, from the raw administrations (the
+# closest analogue of Howard's "nausea or vomiting on one or more
+# occasions"); antiemetic on 2 or more calendar days is a proxy for the
+# "more than one postoperative day" arm of their severe PONV definition.
+antiemetic_events <- non_pca_mar_clean |>
+  filter(given == TRUE, tolower(GENERIC_NAME) %in% tolower(antiemetic_drugs)) |>
+  select(PAT_ENC_CSN_ID, ADMIN_TIME)
+
+ae_flags <- morphine_nca |>
+  select(PAT_ENC_CSN_ID, episode_id, episode_start, episode_end) |>
+  left_join(antiemetic_events, by = "PAT_ENC_CSN_ID", relationship = "many-to-many") |>
+  filter(!is.na(ADMIN_TIME), ADMIN_TIME >= episode_start, ADMIN_TIME <= episode_end) |>
+  group_by(PAT_ENC_CSN_ID, episode_id) |>
+  summarise(n_ae_days = n_distinct(as_date(ADMIN_TIME)), .groups = "drop")
+morphine_nca <- morphine_nca |>
+  left_join(ae_flags, by = c("PAT_ENC_CSN_ID", "episode_id")) |>
+  mutate(any_antiemetic_during = !is.na(n_ae_days),
+         antiemetic_multiday = coalesce(n_ae_days, 0L) >= 2L)
 
 n_adm <- nrow(morphine_nca)
 n_pat <- n_distinct(left_join(morphine_nca, admissions_patid, by = "PAT_ENC_CSN_ID")$PAT_ID)
@@ -426,7 +354,7 @@ fmt_ci <- function(x, n) {
 pct1 <- function(x) if (all(is.na(x))) "n/a" else sprintf("%.1f%%", 100 * mean(x, na.rm = TRUE))
 
 howard_a <- data.frame(
-  Measure = c("Patients", "Aged under 6 years", "Median age", "Mean NCA duration",
+  Measure = c("Patients", "Aged 6 years or under", "Median age", "Mean NCA duration",
               "Naloxone reversal / serious adverse events",
               "   beyond the neonatal period", "   neonates (under 1 month)",
               "Any antiemetic during NCA (administration-based)",
@@ -434,7 +362,7 @@ howard_a <- data.frame(
               "Antipruritic (administration-based)"),
   `This study` = c(
     sprintf("%s admissions (%s patients)", format(n_adm, big.mark = ","), format(n_pat, big.mark = ",")),
-    sprintf("%.0f%%", 100 * mean(morphine_nca$AGE < 6, na.rm = TRUE)),
+    sprintf("%.0f%%", 100 * mean(morphine_nca$AGE < 7, na.rm = TRUE)),
     sprintf("%.1f years", median(morphine_nca$AGE, na.rm = TRUE)),
     sprintf("%.1f h", mean(dur_h, na.rm = TRUE)),
     fmt_ci(sum(nal, na.rm = TRUE), sum(!is.na(nal))),
@@ -472,18 +400,19 @@ howard_b <- morphine_nca |>
   rename(`Age band` = howard_age, `Episodes, n` = n) |>
   mutate(`Age band` = as.character(`Age band`))
 
-cat("Howard comparison (console summary only, not exported to Word). Key figures:\n")
+cat("Key figures:\n")
 print(howard_a, row.names = FALSE)
 cat("\nBy Howard age band:\n")
 print(howard_b, width = Inf)
-cat("\n(Antiemetic and antipruritic are administration-based; Howard recorded symptoms.\n")
-cat("Use as an informal anchor for the outcome definitions, not as validation.)\n\n")
+cat("\n")
 
 # ============================================================
-# TABLE 2 — OXYCODONE DESCRIPTIVE (S4, all episodes)
-# Stacked: patient-level + episode-level, mirroring Table 1.
+# TABLE 2 - Oxycodone patient and episode characteristics
 # ============================================================
-cat("Building Table 2 — oxycodone descriptive (S4)...\n")
+# Patient-level section (one row per patient) and episode-level section
+# (all oxycodone episodes with episode-level metrics and a determined
+# PCA/NCA mode).
+cat("Building Table 2...\n")
 
 s4_oxy_t2 <- pca_episodes_flagged |>
   filter(drug == "oxycodone") |>
@@ -506,19 +435,19 @@ s4_oxy_t2 <- pca_episodes_flagged |>
   ) |>
   filter(mode %in% c("PCA", "NCA"))
 
-cat("Line of therapy check — is_first_line TRUE must appear ONLY under '1st line':\n")
+cat("Line of therapy check (is_first_line TRUE must appear only under '1st line'):\n")
 print(table(is_first_line = s4_oxy_t2$is_first_line,
             line = s4_oxy_t2$drug_line_label, useNA = "ifany"))
 cat("\n")
 
-cat("Peak pain score present (S4):", sum(!is.na(s4_oxy_t2$peak_pain_score)), "/", nrow(s4_oxy_t2), "\n")
-cat("Time-weighted mean pain score present (S4):",
+cat("Peak pain score present (oxycodone):", sum(!is.na(s4_oxy_t2$peak_pain_score)), "/", nrow(s4_oxy_t2), "\n")
+cat("Time-weighted mean pain score present (oxycodone):",
     sum(!is.na(s4_oxy_t2$time_weighted_mean_pain)), "/", nrow(s4_oxy_t2), "\n")
 
 episode_dose_for_consumption <- tryCatch(
   readRDS("1 - data/3 - processed_data/episode_dose.rds"),
   error = function(e) {
-    cat("episode_dose.rds not found — consumption row will be NA\n")
+    cat("episode_dose.rds not found: consumption row will be NA\n")
     return(NULL)
   }
 )
@@ -538,7 +467,7 @@ if (!is.null(episode_dose_for_consumption)) {
 episode_true_total_dose_t2 <- tryCatch(
   readRDS("1 - data/3 - processed_data/episode_true_total_dose.rds"),
   error = function(e) {
-    cat("episode_true_total_dose.rds not found — total dose row will be NA\n")
+    cat("episode_true_total_dose.rds not found: total dose row will be NA\n")
     NULL
   }
 )
@@ -553,16 +482,14 @@ if (!is.null(episode_true_total_dose_t2)) {
   s4_oxy_t2$total_dose_mcg_kg_hr <- NA_real_
 }
 
-cat("Total dose (background+bolus) joined (S4):",
+cat("Total dose (background+bolus) joined (oxycodone):",
     sum(!is.na(s4_oxy_t2$total_dose_mcg_kg_hr)), "/", nrow(s4_oxy_t2), "\n")
 
-cat("Peak pain score joined (S4):", sum(!is.na(s4_oxy_t2$peak_pain_score)), "/", nrow(s4_oxy_t2), "\n")
-cat("Consumption joined (S4):", sum(!is.na(s4_oxy_t2$mcg_per_kg_hr)), "/", nrow(s4_oxy_t2), "\n\n")
+cat("Peak pain score joined (oxycodone):", sum(!is.na(s4_oxy_t2$peak_pain_score)), "/", nrow(s4_oxy_t2), "\n")
+cat("Consumption joined (oxycodone):", sum(!is.na(s4_oxy_t2$mcg_per_kg_hr)), "/", nrow(s4_oxy_t2), "\n\n")
 
-# ---- Which oxycodone episodes are NOT in Table 2, and why (computed) ----
-# An oxycodone episode is excluded if (a) it has no row in episode_metrics
-# (in practice: no recorded episode end time, so no duration/shift data) or
-# (b) its PCA/NCA mode is undetermined.
+# Oxycodone episodes not in Table 2 and why: no row in episode_metrics (in
+# practice, no recorded episode end time) or an undetermined PCA/NCA mode.
 oxy_all_t2   <- pca_episodes_flagged |> filter(drug == "oxycodone")
 oxy_met_t2   <- episode_metrics |> filter(drug == "oxycodone")
 k2           <- c("PAT_ENC_CSN_ID", "episode_id")
@@ -605,54 +532,6 @@ t2_footnote <- paste0(
   t2_excl_txt, " ",
   "Abbreviations: IQR, interquartile range; PCA, patient-controlled analgesia; NCA, nurse-controlled analgesia.")
 
-# ---- Original by-PCA/NCA episode-level table, retained as supplementary ----
-tbl2_by_mode <- s4_oxy_t2 |>
-  select(mode, AGE, WEIGHT_KG, GENDER, age_group,
-         episode_duration_hrs, proc_category_display,
-         reactive_antiemetic_final, any_antipruritic_final,
-         any_naloxone_reversal_final,
-         peak_pain_score, time_weighted_mean_pain,
-         total_dose_mcg_kg_hr, mcg_per_kg_hr) |>
-  mutate(
-    reactive_antiemetic_final = factor(reactive_antiemetic_final, levels = c(FALSE, TRUE), labels = c("No", "Yes")),
-    any_antipruritic_final = factor(any_antipruritic_final, levels = c(FALSE, TRUE), labels = c("No", "Yes")),
-    any_naloxone_reversal_final = factor(any_naloxone_reversal_final, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
-  ) |>
-  tbl_summary(
-    by = mode,
-    label = list(
-      AGE ~ "Age, years",
-      WEIGHT_KG ~ "Weight, kg",
-      GENDER ~ "Sex",
-      age_group ~ "Age group",
-      episode_duration_hrs ~ "Episode duration, hours",
-      proc_category_display ~ "Procedure category (surgical only; non-surgical episodes shown as one group)",
-      reactive_antiemetic_final ~ "Antiemetic administration (reactive definition), n (%)",
-      any_antipruritic_final ~ "Any antipruritic — n (%)",
-      any_naloxone_reversal_final ~ "Naloxone reversal — n (%)",
-      peak_pain_score ~ "Peak pain score",
-      time_weighted_mean_pain ~ "Time-weighted mean pain score",
-      total_dose_mcg_kg_hr ~ "Total dose (background + bolus), µg/kg/h",
-      mcg_per_kg_hr ~ "Background infusion only, µg/kg/h"
-    ),
-    statistic = list(
-      all_continuous() ~ "{median} ({p25}–{p75})",
-      all_categorical() ~ "{n} ({p}%)"
-    ),
-    digits = list(all_continuous() ~ 1),
-    missing = "no"
-  ) |>
-  add_overall(last = FALSE) |>
-  modify_header(label = "Outcome",
-                stat_0 = sprintf("Overall (n=%d)", nrow(s4_oxy_t2)),
-                stat_1 = sprintf("PCA (n=%d)", sum(s4_oxy_t2$mode == "PCA")),
-                stat_2 = sprintf("NCA (n=%d)", sum(s4_oxy_t2$mode == "NCA"))) |>
-  modify_caption(sprintf("Oxycodone PCA/NCA episode characteristics by mode (all episodes, n=%d) — not exported",
-                         nrow(s4_oxy_t2))) |>
-  bold_labels() |>
-  modify_footnote(all_stat_cols() ~ t2_footnote)
-
-# ---- Main Table 2: patient-level + episode-level ----
 t2_patients <- s4_oxy_t2 |>
   arrange(PAT_ID, episode_start) |>
   distinct(PAT_ID, .keep_all = TRUE)
@@ -667,8 +546,8 @@ tbl2_patients <- t2_patients |>
     digits = list(all_continuous() ~ 1), missing = "no"
   ) |>
   modify_header(label = "Characteristic", stat_0 = "Median (IQR) or n (%)") |>
-  modify_caption(sprintf("Table 2. Oxycodone PCA/NCA patient and episode characteristics (%d patients / %d episodes)",
-                         nrow(t2_patients), nrow(s4_oxy_t2))) |>
+  modify_caption(sprintf("Table 2. Oxycodone PCA/NCA patient and episode characteristics (%s patients; %s episodes)",
+                         format(nrow(t2_patients), big.mark = ","), format(nrow(s4_oxy_t2), big.mark = ","))) |>
   bold_labels()
 
 tbl2_episodes <- s4_oxy_t2 |>
@@ -709,74 +588,12 @@ tbl2 <- tbl_stack(
 r2 <- attach_footnote(tbl2, t2_footnote)
 tbl2 <- r2$tbl
 t2_fn_ok <- r2$ok
-cat("Table 2 built (stacked patient/episode; by-mode version kept as tbl2_by_mode)\n\n")
-
-cat("============================================================\n")
-cat("SUPPLEMENTARY — SURGICAL vs MEDICAL COMPARISON (S4, descriptive)\n")
-cat("============================================================\n\n")
-
-surgical_vs_medical <- s4_oxy_t2 |>
-  mutate(
-    population = if_else(
-      PAT_ENC_CSN_ID %in% s4_surgical_keys$PAT_ENC_CSN_ID &
-        episode_id %in% s4_surgical_keys$episode_id,
-      "Surgical", "Medical"
-    )
-  )
-
-cat("--- N by group ---\n")
-print(table(surgical_vs_medical$population))
-cat("\n")
-
-cat("--- Efficacy: peak pain score, background consumption ---\n")
-surgical_vs_medical |>
-  group_by(population) |>
-  summarise(
-    n = n(),
-    peak_pain_median = round(median(peak_pain_score, na.rm = TRUE), 1),
-    peak_pain_q25 = round(quantile(peak_pain_score, 0.25, na.rm = TRUE), 1),
-    peak_pain_q75 = round(quantile(peak_pain_score, 0.75, na.rm = TRUE), 1),
-    consumption_median = round(median(mcg_per_kg_hr, na.rm = TRUE), 2),
-    consumption_q25 = round(quantile(mcg_per_kg_hr, 0.25, na.rm = TRUE), 2),
-    consumption_q75 = round(quantile(mcg_per_kg_hr, 0.75, na.rm = TRUE), 2),
-    .groups = "drop"
-  ) |>
-  print()
-
-wt_peak <- wilcox.test(peak_pain_score ~ population, data = surgical_vs_medical)
-wt_consumption <- wilcox.test(mcg_per_kg_hr ~ population, data = surgical_vs_medical)
-cat("\nWilcoxon peak pain score, surgical vs medical: p =", format.pval(wt_peak$p.value, digits = 3), "\n")
-cat("Wilcoxon consumption, surgical vs medical: p =", format.pval(wt_consumption$p.value, digits = 3), "\n\n")
-
-cat("--- Side effects: surgical vs medical ---\n")
-surgical_vs_medical |>
-  group_by(population) |>
-  summarise(
-    n = n(),
-    pct_antiemetic = round(100 * mean(reactive_antiemetic_final, na.rm = TRUE), 1),
-    pct_antipruritic = round(100 * mean(any_antipruritic_final, na.rm = TRUE), 1),
-    n_nalox_reversal = sum(any_naloxone_reversal_final, na.rm = TRUE),
-    .groups = "drop"
-  ) |>
-  print()
-
-antiemetic_tab <- table(surgical_vs_medical$population, surgical_vs_medical$reactive_antiemetic_final)
-antipruritic_tab <- table(surgical_vs_medical$population, surgical_vs_medical$any_antipruritic_final)
-
-if (ncol(antiemetic_tab) == 2) {
-  ct1 <- suppressWarnings(chisq.test(antiemetic_tab))
-  cat("Chi-squared, antiemetic, surgical vs medical: p =", format.pval(ct1$p.value, digits = 3), "\n")
-}
-if (ncol(antipruritic_tab) == 2) {
-  ct2 <- suppressWarnings(chisq.test(antipruritic_tab))
-  cat("Chi-squared, antipruritic, surgical vs medical: p =", format.pval(ct2$p.value, digits = 3), "\n")
-}
-cat("\n")
+cat("Table 2 built\n\n")
 
 # ============================================================
-# TABLE 3 — PSM BALANCE (asa_grade included, dynamic headers)
+# TABLE S1 - Covariate balance before and after matching
 # ============================================================
-cat("Building Table 3 — PSM balance...\n")
+cat("Building Table S1...\n")
 
 pre_match <- psm_data |>
   mutate(
@@ -794,9 +611,10 @@ post_match <- matched_data |>
   ) |>
   select(-episode_duration_hrs.x, -episode_duration_hrs.y)
 
-# keep_specialties: the specialties kept as their own level. When NULL the
-# n>=30 rule is applied within df itself; for post_match it is passed the
-# PRE-match list so the matched table uses the same collapse as the matching.
+# Rebuilds the matching covariates for the matched rows. keep_specialties
+# is the list of specialties kept as their own level; for post_match it is
+# the pre-match list, so the matched table uses the same collapse as the
+# matching model.
 add_psm_covariates <- function(df, keep_specialties = NULL) {
   same_service_map <- c(
     "NEUROSURGERY"           = "PAEDIATRIC NEUROSURGERY",
@@ -915,13 +733,13 @@ tbl3_labels <- list(
   mode ~ "Mode", proc_category ~ "Procedure category",
   specialty_collapsed ~ "Specialty", asa_grade ~ "ASA grade",
   had_peripheral ~ "Peripheral nerve block", year ~ "Year",
-  had_remifentanil ~ "Remifentanil", had_intraop_ketamine ~ "Intraop ketamine",
-  had_intraop_clonidine ~ "Intraop clonidine",
+  had_remifentanil ~ "Intraoperative remifentanil", had_intraop_ketamine ~ "Intraoperative ketamine",
+  had_intraop_clonidine ~ "Intraoperative clonidine",
   neuraxial_intrathecal_mar ~ "Intrathecal opioid",
-  had_intraop_paracetamol ~ "Intraop paracetamol",
-  had_intraop_nsaid ~ "Intraop NSAID", had_intraop_magnesium ~ "Intraop magnesium",
-  had_intraop_fentanyl ~ "Intraop fentanyl", had_intraop_morphine ~ "Intraop morphine",
-  had_intraop_oxycodone2 ~ "Intraop oxycodone", had_intraop_diamorphine ~ "Intraop diamorphine",
+  had_intraop_paracetamol ~ "Intraoperative paracetamol",
+  had_intraop_nsaid ~ "Intraoperative NSAID", had_intraop_magnesium ~ "Intraoperative magnesium",
+  had_intraop_fentanyl ~ "Intraoperative fentanyl", had_intraop_morphine ~ "Intraoperative morphine",
+  had_intraop_oxycodone2 ~ "Intraoperative oxycodone", had_intraop_diamorphine ~ "Intraoperative diamorphine",
   anaesthesia_duration_mins ~ "Anaesthesia duration, min"
 )
 
@@ -957,7 +775,7 @@ tbl3_post <- post_match |>
                 stat_2 = sprintf("Oxycodone (n=%d)", sum(post_match$drug == "Oxycodone"))) |>
   bold_labels()
 
-# Balance statement computed from the matching model (match_out, script 10)
+# Balance statement computed from the matching model (match_out)
 smd_post <- summary(match_out, standardize = TRUE)$sum.matched[, "Std. Mean Diff."]
 smd_post <- abs(smd_post[!is.na(smd_post) & names(smd_post) != "distance"])
 smd_over <- sort(smd_post[smd_post > 0.10], decreasing = TRUE)
@@ -987,17 +805,17 @@ tbl3 <- tbl_merge(
   modify_footnote(
     all_stat_cols() ~ paste0(
       "Continuous: median (IQR); categorical: n (%). ", smd_sentence, " ",
-      "Concurrent epidural analgesia was an eligibility criterion (excluded), so is not a balance covariate. ",
+      "Intrathecal opioid is defined as any intraoperative drug given by the intrathecal route (in practice, opioid). Concurrent epidural analgesia was an eligibility criterion (excluded), so is not a balance covariate. ",
       "Abbreviations: ASA, American Society of Anesthesiologists physical status; IQR, interquartile range; NCA, nurse-controlled analgesia; NSAID, nonsteroidal anti-inflammatory drug; PCA, patient-controlled analgesia.")
   )
-cat("Table 3 built\n\n")
+cat("Table S1 built\n\n")
 
 # ============================================================
-# TABLE 4 — PRIMARY OUTCOMES
-# (Composite side effect removed. Reports antiemetic, antipruritic and
-# naloxone reversal independently.)
+# TABLE 3 - Primary outcomes in the matched cohort
 # ============================================================
-cat("Building Table 4 — matched outcomes...\n")
+# Antiemetic, antipruritic and naloxone reversal are reported separately
+# (no composite).
+cat("Building Table 3...\n")
 
 table4_base <- matched_data |>
   mutate(
@@ -1023,7 +841,7 @@ table4_matched_outcomes <- table4_base |>
 episode_true_total_dose <- tryCatch(
   readRDS("1 - data/3 - processed_data/episode_true_total_dose.rds"),
   error = function(e) {
-    cat("episode_true_total_dose.rds not found — Total dose rows will be skipped\n")
+    cat("episode_true_total_dose.rds not found: total dose rows will be skipped\n")
     NULL
   }
 )
@@ -1079,8 +897,7 @@ if (have_dose) {
   }
 } else t4_denom <- paste0(t4_denom, ".")
 
-# Footnote piece that depends on the data: whether flowsheet linkage
-# differed by drug in THIS matched population.
+# Whether flowsheet linkage differed by drug in the matched cohort
 n_t4 <- nrow(table4_matched_outcomes)
 
 dose_sentence <- "Total dose is restricted to episodes with \u226580% pump flowsheet coverage."
@@ -1098,7 +915,7 @@ if (!is.null(episode_true_total_dose)) {
   cat(sprintf("Flowsheet linkage by drug in the matched population: chi-squared p = %.3f\n\n", link_p))
   if (!is.na(link_p) && link_p < 0.05) {
     dose_sentence <- paste0(dose_sentence, sprintf(
-      " Linkage differed by drug (p=%.3f); a separate inverse-probability-weighting sensitivity check confirmed the unweighted comparison is robust to this.", link_p))
+      " Linkage differed by drug (p=%.3f).", link_p))
   } else if (!is.na(link_p)) {
     dose_sentence <- paste0(dose_sentence, sprintf(
       " Linkage did not differ by drug (p=%.2f).", link_p))
@@ -1170,32 +987,13 @@ tbl4 <- table4_matched_outcomes |>
 tbl4 <- tryCatch(tbl4 |> modify_footnote(p.value ~ NA_character_),
                  error = function(e) tbl4)
 
-cat("--- Laxative (descriptive only, not part of tbl4's formal p-value table) ---\n")
-laxative_descriptive <- table4_matched_outcomes |>
-  group_by(drug) |>
-  summarise(n = n(), pct_laxative = round(100 * mean(any_laxative_full, na.rm = TRUE), 1),
-            .groups = "drop")
-print(laxative_descriptive)
-cat("(Not tested statistically. Report as descriptive text, not in Table 4's formal rows.)\n\n")
-
-cat("Table 4 built\n\n")
+cat("Table 3 built\n\n")
 
 # ============================================================
-# TABLE 5 — ROTATION (descriptive panels + adjusted OR)
-#
-# Built by 15_rotation_analysis.R, run BEFORE this script — produces
-# FOUR objects: tbl5 (5a, descriptive rate), ft5b (destinations), ft5c
-# (multi-rotation pattern) and ft5d (covariate-adjusted rotation-away OR,
-# computed on the pre-match eligible pool due to too few events in the
-# matched sample alone; see script 15 — its caption quotes the matched
-# pair and event counts, computed live there).
+# TABLE 4 - Opioid rotation (built by 11_rotation_analysis.R)
 # ============================================================
-
-stopifnot(
-  exists("tbl5"), exists("ft5b"), exists("ft5c"), exists("ft5d")
-)
-cat("Table 5 objects (tbl5, ft5b, ft5c, ft5d) confirmed present — built by\n")
-cat("15_rotation_analysis.R, not constructed here.\n\n")
+stopifnot(exists("tbl4a"), exists("ft4b"), exists("ft4c"))
+cat("Table 4 objects (tbl4a, ft4b, ft4c) found in the session.\n\n")
 
 # ============================================================
 # EXPORT TO WORD
@@ -1216,20 +1014,35 @@ ft1  <- pub(tbl1)
 ft2  <- pub(tbl2)
 ft3  <- pub(tbl3)
 ft4  <- pub(tbl4)
-ft5a <- pub(tbl5)
-ft5b <- ft_theme(ft5b)
-ft5c <- ft_theme(ft5c)
-ft5d <- ft_theme(ft5d)
+ft4a <- pub(tbl4a)
+ft4b <- ft_theme(ft4b)
+ft4c <- ft_theme(ft4c)
 
 fp_title <- fp_text(font.family = "Arial", font.size = 13, bold = TRUE)
 fp_sub   <- fp_text(font.family = "Arial", font.size = 9, italic = TRUE, color = "555555")
 fp_head  <- fp_text(font.family = "Arial", font.size = 11, bold = TRUE)
 fp_note  <- fp_text(font.family = "Arial", font.size = 8)
 
-# Safety net: remove literal markdown asterisks ("**bold**") that survive into the
-# Word file (e.g. from captions/headers built in script 15). Works on a copy and
-# replaces the output only if every step succeeds; otherwise the file is untouched.
-strip_markdown_asterisks <- function(path) {
+# Post-processing of the saved Word file (on a copy; the output is replaced
+# only if every step succeeds):
+#   - removes literal markdown asterisks ("**bold**") left by captions and
+#     headers built in other scripts
+#   - converts British to US spelling, and age-group labels to the form
+#     used in the manuscript
+us_replacements <- c(
+  "Paediatric"  = "Pediatric",  "paediatric"  = "pediatric",
+  "PAEDIATRIC"  = "PEDIATRIC",
+  "Orthopaedic" = "Orthopedic", "orthopaedic" = "orthopedic",
+  "Gynaecology" = "Gynecology",
+  "Anaesthesia" = "Anesthesia", "anaesthesia" = "anesthesia",
+  "Anaesthetic" = "Anesthetic", "anaesthetic" = "anesthetic",
+  "Infant (28 days-1yr)"     = "Infant (28 days\u20131 year)",
+  "Young child (1-5yr)"      = "Young child (1\u20135 years)",
+  "Child (6-11yr)"           = "Child (6\u201311 years)",
+  "Adolescent (12-15yr)"     = "Adolescent (12\u201315 years)"
+)
+
+fix_docx_text <- function(path) {
   tryCatch({
     if (!requireNamespace("zip", quietly = TRUE)) stop("package 'zip' not available")
     tmp <- file.path(tempdir(), paste0("docx_fix_", format(Sys.time(), "%H%M%S")))
@@ -1237,17 +1050,17 @@ strip_markdown_asterisks <- function(path) {
     utils::unzip(path, exdir = tmp)
     f <- file.path(tmp, "word", "document.xml")
     x <- paste(readLines(f, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
-    n <- length(gregexpr("**", x, fixed = TRUE)[[1]])
-    if (identical(as.integer(gregexpr("**", x, fixed = TRUE)[[1]][1]), -1L)) return(0L)
+    n_ast <- lengths(regmatches(x, gregexpr("**", x, fixed = TRUE)))
     x <- gsub("**", "", x, fixed = TRUE)
+    for (k in names(us_replacements)) x <- gsub(k, us_replacements[[k]], x, fixed = TRUE)
     writeLines(x, f, useBytes = TRUE)
     rel <- list.files(tmp, recursive = TRUE, all.files = TRUE, include.dirs = FALSE)
     newzip <- tempfile(fileext = ".docx")
     zip::zip(zipfile = newzip, files = rel, root = tmp, mode = "mirror", include_directories = FALSE)
     file.copy(newzip, path, overwrite = TRUE)
-    n
+    n_ast
   }, error = function(e) {
-    message("Asterisk clean-up skipped: ", conditionMessage(e))
+    message("Word text clean-up skipped: ", conditionMessage(e))
     NA_integer_
   })
 }
@@ -1263,11 +1076,11 @@ doc <- tryCatch(
     page_margins = page_mar(top = 0.8, bottom = 0.8, left = 0.8, right = 0.8))),
   error = function(e) doc)
 
-# Study period in the title below: October 2014 to July 2026 (end date
-# confirmed). The data range printed above is a check against it.
+# Study period in the title: October 2014 to July 2026. The data range
+# printed above is a check against it.
 doc <- doc |>
   body_add_fpar(fpar(ftext("Oxycodone PCA/NCA in Children: Manuscript Tables", fp_title))) |>
-  body_add_fpar(fpar(ftext("Addenbrooke's Hospital \u00b7 October 2014 \u2013 July 2026", fp_sub))) |>
+  body_add_fpar(fpar(ftext("October 2014 \u2013 July 2026", fp_sub))) |>
   body_add_par("", style = "Normal") |>
   body_add_flextable(ft1)
 if (!t1_fn_ok) doc <- doc |> add_note(t1_footnote)
@@ -1277,29 +1090,24 @@ doc <- doc |>
 if (!t2_fn_ok) doc <- doc |> add_note(t2_footnote)
 doc <- doc |>
   body_add_break() |>
-  body_add_flextable(ft3) |>
+  body_add_flextable(ft4) |>      # Table 3: matched outcomes
   body_add_break() |>
-  body_add_flextable(ft4) |>
+  body_add_flextable(ft4a) |>     # Table 4: rotation, panels A to C
+  body_add_par("", style = "Normal") |>
+  body_add_flextable(ft4b) |>
+  body_add_par("", style = "Normal") |>
+  body_add_flextable(ft4c) |>
   body_add_break() |>
-  body_add_flextable(ft5a) |>
-  body_add_par("", style = "Normal") |>
-  body_add_flextable(ft5b) |>
-  body_add_par("", style = "Normal") |>
-  body_add_flextable(ft5c) |>
-  body_add_par("", style = "Normal") |>
-  body_add_flextable(ft5d) |>
+  body_add_flextable(ft3) |>      # Supplementary Table S1: covariate balance
   body_add_break() |>
   add_head("Notes and definitions") |>
   add_note("Matched cohort = primary comparative population: each child's first-ever recorded PCA/NCA episode at this centre (therefore first line and first episode), one episode per patient, surgical, no concurrent epidural, medical oncology excluded. Descriptive population = all oxycodone episodes, including rotations.") |>
   add_note("First line (as used in Tables 1 and 2) = first PCA/NCA episode in the admission (no prior opioid in that admission). The matched cohort is stricter: it requires no earlier recorded PCA/NCA episode in any admission at this centre. PCA/NCA at other hospitals cannot be excluded, so this does not establish first opioid exposure ever.") |>
   add_note("Time-weighted mean pain score: each reading is weighted by the time until the next reading (last observation carried forward); time before the first reading is excluded.") |>
-  add_note("Side-effect measures are administration-based proxies (antiemetic for PONV, antipruritic for itch); naloxone reversal is manually chart-reviewed.")
+  add_note("Side-effect measures are administration-based proxies (antiemetic for nausea and vomiting, antipruritic for itch); naloxone reversal is manually chart-reviewed.")
 
 print(doc, target = output_path)
-n_ast <- strip_markdown_asterisks(output_path)
-if (!is.na(n_ast) && n_ast > 0) cat("Removed", n_ast, "literal ** markers from the Word file\n")
+fix_docx_text(output_path)
 
-cat("\n============================================================\n")
-cat("ANALYSIS 11 COMPLETE\n")
-cat("Output:", output_path, "(Tables 1-5 and notes)\n")
+cat("\nWord file written:", output_path, "\n")
 cat("============================================================\n")

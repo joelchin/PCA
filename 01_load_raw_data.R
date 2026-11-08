@@ -1,33 +1,20 @@
 # ============================================================
-# 01 — LOAD RAW DATA
+# 01 - Load raw data
+# ============================================================
+# Reads the raw EPIC extract (one Excel file per data category plus a
+# three-sheet workbook of lines/drains/airways, LDA) and sets up the
+# session for 02_clean_data.R.
 #
-# Reads the raw EPIC extract (one Excel file per data category, plus
-# a three-sheet workbook for line/drain/airway - LDA - data) and does
-# the minimal tidying needed before cleaning proper starts in
-# 02_clean_data.R.
+#   - LDAs arrive as one workbook with three sheets (urethral
+#     catheters, epidural catheters, epidural catheter assessments).
+#   - Pain and ACVPU observations arrive as one feed in two parts,
+#     distinguished by a score type column; they are combined and then
+#     split into pain_scores and avpu_scores.
 #
-# Two aspects of the extract's structure are handled explicitly here:
-#   - LDAs arrive as a single workbook with three sheets (urethral
-#     catheters, epidural catheters, epidural catheter assessments),
-#     read separately by sheet name rather than as one flat table.
-#   - Pain AVPU is one combined feed containing both pain scores and
-#     NEWS2/MEOWS ACVPU readings, distinguished by a score_type
-#     column. It arrives in two parts, which are combined and then
-#     split into pain_scores and avpu_scores below.
-#
-# Housekeeping built into this script (Oct 2026):
-#   - Packages: only packages that are MISSING are installed, and only
-#     when none of the pipeline packages is already attached in the
-#     session. Re-running this script never reinstalls anything, and it
-#     can no longer trigger the "cannot be unloaded" error (installing
-#     over a package, such as officer, that is already loaded).
-#   - Binary packages only: no Rtools is needed or used.
-#   - The working directory and every input file are checked up front,
-#     so a wrong path or a missing file stops the script with a clear
-#     message instead of failing part-way through.
-#   - A warning is printed if the session already contains objects
-#     (a sign of a restored or stale workspace). The pipeline should
-#     always be run from a fresh R session.
+# Only missing packages are installed (binaries only, no Rtools), and
+# only if none of the pipeline packages is already loaded, which avoids
+# the "cannot be unloaded" error. Input paths and files are checked
+# before anything is read. Run from a fresh R session.
 # ============================================================
 
 # ------------------------------------------------------------
@@ -45,10 +32,9 @@ if (length(stale_objects) > 0) {
 # ------------------------------------------------------------
 # 1. WORKING DIRECTORY
 # ------------------------------------------------------------
-# Set PCA_DATA_DIR in your user-level .Renviron (see README), e.g.
-#   PCA_DATA_DIR=//your-server/share/path/to/project_data
-# The folder holds the raw extract and all derived data. It must live
-# OUTSIDE this repository and is never committed.
+# Set PCA_DATA_DIR in your user-level .Renviron (see README). The folder
+# holds the raw extract and all derived data and must live outside this
+# repository.
 data_dir <- Sys.getenv("PCA_DATA_DIR")
 
 if (!nzchar(data_dir)) {
@@ -59,21 +45,20 @@ if (!dir.exists(data_dir)) {
   stop("Data folder not found: ", data_dir,
        "\nCheck that you are connected to the network drive.")
 }
+# Remember where the code lives so drug_lists.R can be found after setwd()
+options(pca_code_dir = normalizePath(getwd()))
 setwd(data_dir)
 cat("Working directory:", getwd(), "\n\n")
 
 # ------------------------------------------------------------
 # 2. PACKAGES
-# Install only what is missing, and only in a session where none of
-# the pipeline packages is loaded yet.
 # ------------------------------------------------------------
 pipeline_pkgs <- c("tidyverse", "lubridate", "readxl",
                    "flextable", "officer", "gtsummary", "labelled",
                    "furrr", "future", "tictoc",
                    "MatchIt", "logistf", "zip")
 
-# Check "installed?" WITHOUT loading anything (requireNamespace() would load
-# the package, which is exactly what we must avoid before an install).
+# Check for installation without loading (requireNamespace() would load it)
 is_installed <- function(pkgs) vapply(pkgs, function(p) nzchar(system.file(package = p)),
                                       logical(1))
 
@@ -92,12 +77,12 @@ if (length(missing_pkgs) > 0) {
   
   cat("Installing missing packages:", paste(missing_pkgs, collapse = ", "), "\n")
   
-  # CRAN mirror, in case none is set
+  # Set a CRAN mirror if none is set
   repos <- getOption("repos")
   if (is.null(repos) || is.na(repos["CRAN"]) || isTRUE(unname(repos["CRAN"]) == "@CRAN@")) {
     options(repos = c(CRAN = "https://cloud.r-project.org"))
   }
-  # Windows binaries only: never try to build from source (no Rtools needed)
+  # Binaries only
   options(install.packages.compile.from.source = "never")
   
   install.packages(missing_pkgs, type = "binary")
@@ -126,10 +111,10 @@ cat("Key package versions: ",
            collapse = " | "), "\n\n", sep = "")
 
 # ------------------------------------------------------------
-# 3. INPUT FILES — check everything exists before reading anything
+# 3. INPUT FILES: check everything exists before reading anything
 # ------------------------------------------------------------
-# Extract file names are site-specific; set them in .Renviron (see README).
-# Files are expected as: <prefix><table name><suffix>
+# File names are expected as <prefix><table name><suffix>; set the prefix
+# and suffix in .Renviron (see README).
 file_prefix <- Sys.getenv("PCA_FILE_PREFIX", unset = "PCA Datasets - ")
 file_suffix <- Sys.getenv("PCA_FILE_SUFFIX", unset = " - refresh.xlsx")
 
@@ -150,7 +135,7 @@ cat("============================================================\n")
 cat("LOADING RAW DATA\n")
 cat("============================================================\n\n")
 
-# --- Core extracts ---
+# Core extracts
 admissions          <- read_excel(paste0(file_prefix, "Admissions", file_suffix))
 anaesthesia_events  <- read_excel(paste0(file_prefix, "Anaesthesia Events", file_suffix))
 anaesthesia_ax_sdes <- read_excel(paste0(file_prefix, "Anaesthesia Ax SDEs", file_suffix))
@@ -162,13 +147,13 @@ pca_mar             <- read_excel(paste0(file_prefix, "PCA MAR", file_suffix))
 pca_flowsheets      <- read_excel(paste0(file_prefix, "PCA Flowsheets", file_suffix))
 problem_list        <- read_excel(paste0(file_prefix, "Problem List", file_suffix))
 
-# --- LDA workbook: three sheets, one file ---
+# LDA workbook (three sheets)
 lda_file <- paste0(file_prefix, "LDAs", file_suffix)
 lda_urethral        <- read_excel(lda_file, sheet = "Urethral Catheters")
 lda_epidural        <- read_excel(lda_file, sheet = "Epidural Catheters")
 lda_epidural_assess <- read_excel(lda_file, sheet = "Epidural Catheter Assessments")
 
-# --- Pain AVPU: exported as two parts, combined then split by score type ---
+# Pain/ACVPU feed (two parts), combined then split by score type
 pain_avpu_pt1 <- read_excel(paste0(file_prefix, "Pain AVPU - pt 1", file_suffix))
 pain_avpu_pt2 <- read_excel(paste0(file_prefix, "Pain AVPU - pt 2", file_suffix))
 
@@ -186,7 +171,6 @@ pain_scores <- pain_avpu |>
 avpu_scores <- pain_avpu |>
   filter(score_type == "NEWS2/MEOWS: ACVPU")
 
-# --- Load summary ---
 cat("============================================================\n")
 cat("LOAD SUMMARY\n")
 cat("============================================================\n")

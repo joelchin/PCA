@@ -1,15 +1,37 @@
-# 06 — GLOBAL POPULATION CLASSIFICATION
-# Surgical (major OPCS) vs Non-surgical (minor/no OPCS)
 # ============================================================
+# 06 - Classify cohorts
+# ============================================================
+# Builds the episode keys for the two analysis populations:
+#
+#   descriptive oxycodone population (s4_*_keys): all oxycodone episodes
+#     with a recorded end time, split into surgical and medical using
+#     case_type_refined (from 04_derive_episode_flags.R)
+#   primary comparative population (s3_*_keys): each child's first-ever
+#     recorded PCA/NCA episode, one episode per child, without
+#     concurrent epidural analgesia, surgical, with the predefined
+#     exclusions applied, a determined delivery mode and a recorded end
+#     time, excluding medical oncology
+#
+# Keys are saved as .rds files in 1 - data/3 - processed_data/.
+# ============================================================
+
 library(tidyverse)
 library(lubridate)
 
-# ---- Manual correction (site-specific) -------------------------------------
-# A patient with GENDER "Not specified" in the extract had sex confirmed as
-# female from the clinical record. The correction is applied to ALL of that
-# patient's episodes. The patient ID is NOT stored in this repository: it is
-# read from a local text file (one PAT_ID per line) kept alongside the data.
-# If the file is absent, no correction is applied.
+stopifnot(
+  exists("pca_episodes_flagged"),
+  exists("admissions_clean"),
+  "case_type_refined" %in% names(pca_episodes_flagged)
+)
+
+# ------------------------------------------------------------
+# Manual sex correction (site-specific)
+# ------------------------------------------------------------
+# One patient recorded as "Not specified" had sex confirmed as female
+# from the clinical record. The patient ID is not stored in this
+# repository: it is read from a local file (one PAT_ID per line) in
+# PCA_DATA_DIR/manual_corrections/. If the file is absent, no correction
+# is applied.
 gender_fix_file <- file.path(Sys.getenv("PCA_DATA_DIR"), "manual_corrections",
                              "gender_fix_pat_ids.txt")
 gender_fix_pat <- if (file.exists(gender_fix_file)) {
@@ -21,58 +43,35 @@ if (length(gender_fix_pat) > 0) {
   fix_csn <- admissions_clean |>
     filter(PAT_ID %in% gender_fix_pat) |>
     pull(PAT_ENC_CSN_ID)
-
+  
   cat("Encounters corrected:", length(fix_csn), "\n")
-  stopifnot(length(fix_csn) >= 1)                    # stops if an ID was mistyped
-
+  stopifnot(length(fix_csn) >= 1)   # stops if an ID was mistyped
+  
   pca_episodes_flagged <- pca_episodes_flagged |>
     mutate(GENDER = if_else(PAT_ENC_CSN_ID %in% fix_csn & GENDER == "Not specified",
                             "Female", GENDER))
 } else {
-  cat("No manual gender correction file found; no correction applied.\n")
+  cat("No manual sex correction file found; no correction applied.\n")
 }
-# -----------------------------------------------------------------------------
 
-cat("============================================================\n")
-cat("ANALYSIS 4 — GLOBAL CLASSIFICATION\n")
-cat("============================================================\n\n")
-# Require cleaned data
-stopifnot(exists("pca_episodes_flagged"))
-stopifnot(exists("admissions_clean"))
-stopifnot(exists("operations_clean"))
-stopifnot("case_type_refined" %in% names(pca_episodes_flagged))
-# admissions_clean/operations_clean are used here rather than the raw
-# admissions/operations objects: operations_clean is a strict superset
-# of operations (built via mutate()) and still carries
-# PFMD_PROC_OPCS_CODES, the column used below, while the raw objects
-# only exist transiently during initial loading and aren't reloaded
-# in later pipeline stages.
-#
-# S3 and S4 both classify surgical/medical status consistently via
-# case_type_refined (built in 04_derive_episode_flags.R), rather than each population
-# tier maintaining its own independent classification logic — this
-# avoids the surgical/medical split silently meaning something
-# different depending on which population tier is being described.
-# S2 (first oxycodone episode, no concurrent epidural) is not part of
-# this pipeline's active population tiers.
 # ============================================================
-# S4 GLOBAL CLASSIFICATION (ALL OXYCODONE EPISODES)
+# DESCRIPTIVE OXYCODONE POPULATION
 # ============================================================
-cat("Creating S4 global classification (all oxycodone)...\n\n")
+cat("\nBuilding the descriptive oxycodone population...\n")
 
+# Episodes with no recorded end time are excluded: duration and
+# shift-based outcomes cannot be computed for them
 all_oxy <- pca_episodes_flagged |>
   filter(
     drug == "oxycodone",
-    !is.na(episode_end)   # excludes the 23 episodes with no end time: duration and
-    # shift-based outcomes cannot be computed for them, so S4
-    # stays aligned with episode_metrics (episodes with a
-    # partial missing stop but an observed end are kept)
+    !is.na(episode_end)
   )
 
-cat("S4 excluded for missing end time:",
+cat("Excluded for missing end time:",
     sum(pca_episodes_flagged$drug == "oxycodone" & is.na(pca_episodes_flagged$episode_end)),
     "\n")
-cat("S4 total (complete episodes only):", nrow(all_oxy), "\n\n")
+cat("Oxycodone episodes with an end time:", nrow(all_oxy), "\n\n")
+
 all_oxy_classified <- all_oxy |>
   mutate(
     case_type = case_when(
@@ -87,82 +86,53 @@ s4_medical_keys <- all_oxy_classified |>
 s4_surgical_keys <- all_oxy_classified |>
   filter(case_type == "Surgical") |>
   select(PAT_ENC_CSN_ID, episode_id)
+
 # ============================================================
-# S3 — PSM POPULATION (morphine vs oxycodone comparative)
+# PRIMARY COMPARATIVE POPULATION (morphine vs oxycodone)
+# ============================================================
+cat("Building the primary comparative population...\n\n")
+
+# Surgical status uses case_type_refined rather than case_type: it also
+# excludes episodes whose recorded operation cannot explain PCA use
+# (entirely minor procedure codes, no preceding operation, or PCA
+# starting more than 2 hours before anaesthesia stop).
 #
-# Population-tier definitions live here in the classification layer,
-# consistent with this project's separation of concerns between
-# classification, flagging, and comparative analysis.
-# ============================================================
-cat("Creating S3 (PSM population: morphine vs oxycodone)...\n\n")
-
-# S3's surgical filter uses case_type_refined rather than the coarser
-# case_type ("does any OPCS-coded operation exist for this
-# admission" — a blunt presence check). case_type_refined
-# additionally excludes episodes where the operation present is
-# genuinely non-explanatory for PCA need (entirely minor procedure
-# codes, no operation actually precedes the episode, or the episode
-# substantially predates the operation's anaesthesia timing by more
-# than a 2h buffer — see 04_derive_episode_flags.R for the full derivation). These
-# cases are not treated as surgical indications for PCA.
-
-stopifnot("case_type_refined" %in% names(pca_episodes_flagged))
-
-# ============================================================
-# mode %in% c("PCA", "NCA") filter
+# Episodes with an undetermined delivery mode (mode == "unknown") are
+# excluded so that they are not treated by MatchIt as a third group.
 #
-# Without this filter, episodes with mode == "unknown" (a genuine
-# data-quality gap — delivery mode couldn't be determined, not a
-# meaningful clinical category) could enter the matched population
-# and be treated by MatchIt as a legitimate third group to balance
-# on. Table 2 already excludes these episodes ("Episodes with
-# undetermined PCA/NCA mode excluded from this table"), so S3 is
-# aligned with that here.
-#
-# Medical oncology (ADMITTING_SPECIALTY "PAEDIATRIC MEDICAL ONCOLOGY" /
-# "MEDICAL ONCOLOGY") is excluded from S3 here, so every script that
-# reads the S3 keys sees the same population. coalesce() keeps episodes
-# with a missing specialty in, rather than letting NA silently drop them.
-# ============================================================
+# Medical oncology is excluded here so that every script reading these
+# keys sees the same population. coalesce() keeps episodes with a
+# missing specialty in.
 
-s3_morphine_keys <- pca_episodes_flagged |>
-  filter(
-    drug == "morphine",
-    is_first_line == TRUE,
-    is_first_episode == TRUE,
-    concurrent_epidural == FALSE,
-    case_type_refined == "surgical",
-    mode %in% c("PCA", "NCA"),
-    !is.na(episode_end),
-    exclude_minor_procedure_any == FALSE,
-    !coalesce(str_detect(toupper(as.character(ADMITTING_SPECIALTY)), "MEDICAL ONCOLOGY"), FALSE)
-  ) |>
-  select(PAT_ENC_CSN_ID, episode_id)
-s3_oxycodone_keys <- pca_episodes_flagged |>
-  filter(
-    drug == "oxycodone",
-    is_first_line == TRUE,
-    is_first_episode == TRUE,
-    concurrent_epidural == FALSE,
-    case_type_refined == "surgical",
-    mode %in% c("PCA", "NCA"),
-    !is.na(episode_end),
-    exclude_minor_procedure_any == FALSE,
-    !coalesce(str_detect(toupper(as.character(ADMITTING_SPECIALTY)), "MEDICAL ONCOLOGY"), FALSE)
-  ) |>
-  select(PAT_ENC_CSN_ID, episode_id)
+s3_filter <- function(df, drug_name, require_end_time = TRUE) {
+  df |>
+    filter(
+      drug == drug_name,
+      is_first_line == TRUE,
+      is_first_episode == TRUE,
+      concurrent_epidural == FALSE,
+      case_type_refined == "surgical",
+      mode %in% c("PCA", "NCA"),
+      !require_end_time | !is.na(episode_end),
+      exclude_minor_procedure_any == FALSE,
+      !coalesce(str_detect(toupper(as.character(ADMITTING_SPECIALTY)),
+                           "MEDICAL ONCOLOGY"), FALSE)
+    ) |>
+    select(PAT_ENC_CSN_ID, episode_id)
+}
 
-# ============================================================
-# FIRST EXPOSURE, FIRST EPISODE, FIRST LINE (patient level)  <-- NEW
-#
-# is_first_line / is_first_episode are judged WITHIN an admission, so a
-# child with an earlier admission could re-enter as "first line" again.
-# The study episode must now be the child's FIRST-EVER recorded PCA/NCA
-# episode (of any opioid) at this centre. That makes it their first exposure
-# to the study opioid, their first episode, and first line; an episode that
-# follows an earlier PCA/NCA episode in any admission is excluded. A child's
-# first-ever episode has only one drug, so no child can be in both arms.
-# ============================================================
+s3_morphine_keys  <- s3_filter(pca_episodes_flagged, "morphine")
+s3_oxycodone_keys <- s3_filter(pca_episodes_flagged, "oxycodone")
+
+# ------------------------------------------------------------
+# First-ever PCA/NCA episode (patient level)
+# ------------------------------------------------------------
+# is_first_line and is_first_episode are judged within an admission, so a
+# child with an earlier admission could re-enter as first line. The study
+# episode must be the child's first-ever recorded PCA/NCA episode (of any
+# opioid) at this centre. An episode that follows an earlier PCA/NCA
+# episode in any admission is excluded. A first-ever episode has only
+# one drug, so no child can be in both arms.
 fe_pid <- admissions_clean |>
   select(PAT_ENC_CSN_ID, PAT_ID) |>
   distinct(PAT_ENC_CSN_ID, .keep_all = TRUE)
@@ -181,93 +151,87 @@ s3_morphine_keys <- s3_morphine_keys |>
 s3_oxycodone_keys <- s3_oxycodone_keys |>
   semi_join(first_exposure_keys, by = c("PAT_ENC_CSN_ID", "episode_id"))
 
-cat("S3 pools after first-exposure restriction — morphine:", nrow(s3_morphine_keys),
+cat("Pools after first-exposure restriction - morphine:", nrow(s3_morphine_keys),
     "| oxycodone:", nrow(s3_oxycodone_keys), "\n\n")
 
-# ============================================================
-# CROSS-ARM PATIENT EXCLUSION
-#
-# Found via a repeat-patient/independence check on the matched PSM
-# output: 5 real children appeared in BOTH drug arms (morphine on one
-# admission, oxycodone on a different, later admission). The existing
-# dedup logic deduplicates EACH drug's pool separately (one episode
-# per patient WITHIN morphine, one per patient WITHIN oxycodone) —
-# nothing prevented the same real patient from legitimately passing
-# both drugs' individual checks and being matched twice, once against
-# a genuinely different morphine patient and once against a
-# genuinely different oxycodone patient. Violates the independence
-# assumption standard matching relies on.
-#
-# Direct decision: exclude these patients from S3 entirely (option 1
-# of three considered — cluster-robust SEs or reporting-as-limitation
-# were the alternatives, not used). Applied here, upstream of
-# matching, so the propensity model itself never sees these
-# ambiguous cross-arm patients.
-# ============================================================
+# ------------------------------------------------------------
+# Counts for the population flow diagram (Figure 1)
+# ------------------------------------------------------------
+# Eligible episodes before the end-time requirement, and how many that
+# requirement removes (all other criteria, including first exposure,
+# applied).
+eligible_no_end_mor <- s3_filter(pca_episodes_flagged, "morphine", require_end_time = FALSE) |>
+  semi_join(first_exposure_keys, by = c("PAT_ENC_CSN_ID", "episode_id"))
+eligible_no_end_oxy <- s3_filter(pca_episodes_flagged, "oxycodone", require_end_time = FALSE) |>
+  semi_join(first_exposure_keys, by = c("PAT_ENC_CSN_ID", "episode_id"))
 
-stopifnot(exists("admissions_clean"))
+cat("--- Flow diagram counts ---\n")
+cat("All episodes:", nrow(pca_episodes_flagged),
+    "| patients:", n_distinct(coalesce(
+      as.character(fe_pid$PAT_ID[match(pca_episodes_flagged$PAT_ENC_CSN_ID, fe_pid$PAT_ENC_CSN_ID)]),
+      paste0("csn_", pca_episodes_flagged$PAT_ENC_CSN_ID))), "\n")
+cat("Morphine or oxycodone episodes:",
+    sum(pca_episodes_flagged$drug %in% c("morphine", "oxycodone")), "\n")
+cat("Eligible before the end-time requirement - morphine:", nrow(eligible_no_end_mor),
+    "| oxycodone:", nrow(eligible_no_end_oxy),
+    "| total:", nrow(eligible_no_end_mor) + nrow(eligible_no_end_oxy), "\n")
+cat("Excluded for no recorded end time - morphine:",
+    nrow(eligible_no_end_mor) - nrow(s3_morphine_keys),
+    "| oxycodone:", nrow(eligible_no_end_oxy) - nrow(s3_oxycodone_keys), "\n\n")
+
+# ------------------------------------------------------------
+# Check that no child is in both arms
+# ------------------------------------------------------------
+# Expected to be zero after the first-exposure restriction. Any child
+# found in both pools is removed from both, so that matching never sees
+# the same child twice.
+pat_lookup <- admissions_clean |> select(PAT_ENC_CSN_ID, PAT_ID)
 
 morphine_patients <- s3_morphine_keys |>
-  left_join(admissions_clean |> select(PAT_ENC_CSN_ID, PAT_ID), by = "PAT_ENC_CSN_ID") |>
+  left_join(pat_lookup, by = "PAT_ENC_CSN_ID") |>
   distinct(PAT_ID)
 oxycodone_patients <- s3_oxycodone_keys |>
-  left_join(admissions_clean |> select(PAT_ENC_CSN_ID, PAT_ID), by = "PAT_ENC_CSN_ID") |>
+  left_join(pat_lookup, by = "PAT_ENC_CSN_ID") |>
   distinct(PAT_ID)
 
 cross_arm_patients <- intersect(morphine_patients$PAT_ID, oxycodone_patients$PAT_ID)
-
-cat("Cross-arm patients found (appear in BOTH morphine and oxycodone\n")
-cat("S3 pools, via different admissions):", length(cross_arm_patients), "\n")
+cat("Children in both arms:", length(cross_arm_patients), "\n")
 
 if (length(cross_arm_patients) > 0) {
   s3_morphine_keys <- s3_morphine_keys |>
-    left_join(admissions_clean |> select(PAT_ENC_CSN_ID, PAT_ID), by = "PAT_ENC_CSN_ID") |>
+    left_join(pat_lookup, by = "PAT_ENC_CSN_ID") |>
     filter(!(PAT_ID %in% cross_arm_patients)) |>
     select(PAT_ENC_CSN_ID, episode_id)
   
   s3_oxycodone_keys <- s3_oxycodone_keys |>
-    left_join(admissions_clean |> select(PAT_ENC_CSN_ID, PAT_ID), by = "PAT_ENC_CSN_ID") |>
+    left_join(pat_lookup, by = "PAT_ENC_CSN_ID") |>
     filter(!(PAT_ID %in% cross_arm_patients)) |>
     select(PAT_ENC_CSN_ID, episode_id)
   
-  cat("S3 pools after cross-arm exclusion — morphine:", nrow(s3_morphine_keys),
+  cat("Pools after cross-arm exclusion - morphine:", nrow(s3_morphine_keys),
       "| oxycodone:", nrow(s3_oxycodone_keys), "\n")
 }
 
 # ============================================================
-# SAVE ALL KEYS
+# SAVE KEYS
 # ============================================================
-cat("Saving classification keys...\n")
-saveRDS(s4_medical_keys, "1 - data/3 - processed_data/s4_medical_keys.rds")
-saveRDS(s4_surgical_keys, "1 - data/3 - processed_data/s4_surgical_keys.rds")
-saveRDS(s3_morphine_keys, "1 - data/3 - processed_data/s3_morphine_keys.rds")
-saveRDS(s3_oxycodone_keys, "1 - data/3 - processed_data/s3_oxycodone_keys.rds")
-cat("s4_medical_keys.rds (all oxy, medical)\n")
-cat("s4_surgical_keys.rds (all oxy, surgical)\n")
-cat("s3_morphine_keys.rds (PSM population, morphine — NOW using case_type_refined)\n")
-cat("s3_oxycodone_keys.rds (PSM population, oxycodone — NOW using case_type_refined)\n\n")
+processed <- "1 - data/3 - processed_data/"
+saveRDS(s4_medical_keys,   paste0(processed, "s4_medical_keys.rds"))
+saveRDS(s4_surgical_keys,  paste0(processed, "s4_surgical_keys.rds"))
+saveRDS(s3_morphine_keys,  paste0(processed, "s3_morphine_keys.rds"))
+saveRDS(s3_oxycodone_keys, paste0(processed, "s3_oxycodone_keys.rds"))
+
 # ============================================================
 # SUMMARY
 # ============================================================
+cat("\n============================================================\n")
+cat("COHORT SUMMARY\n")
 cat("============================================================\n")
-cat("CLASSIFICATION SUMMARY\n")
-cat("============================================================\n\n")
-cat("S4 (All oxycodone):\n")
-cat(sprintf(" Medical (no/minor OPCS): %d (%.1f%%)\n",
-            nrow(s4_medical_keys), 100*nrow(s4_medical_keys)/nrow(all_oxy)))
-cat(sprintf(" Surgical (major OPCS): %d (%.1f%%)\n\n",
-            nrow(s4_surgical_keys), 100*nrow(s4_surgical_keys)/nrow(all_oxy)))
-cat("S3 (PSM population, case_type_refined):\n")
-cat(sprintf(" Morphine: n = %d\n", nrow(s3_morphine_keys)))
-cat(sprintf(" Oxycodone: n = %d\n\n", nrow(s3_oxycodone_keys)))
-cat("ACTION NEEDED: side_effect_temporal_profile.R still defines\n")
-cat("its own inline copy of s3_morphine_keys/s3_oxycodone_keys — check\n")
-cat("whether it also needs the case_type -> case_type_refined switch\n")
-cat("applied, or it will silently diverge from this version.\n\n")
-cat("S3/S4 consistently classify\n")
-cat("surgical vs medical using case_type_refined — the opcs_data/\n")
-cat("minor_procedure_opcs path (admission-level, first-operation-only,\n")
-cat("hardcoded duplicate minor-procedure list) is not used\n")
-cat("anywhere in this script. S2 is not part of this pipeline (confirmed\n")
-cat("dead code, see note near top of script).\n\n")
-cat("============================================================\n")
+cat("Descriptive oxycodone population (episodes with an end time):\n")
+cat(sprintf("  Medical:  %d (%.1f%%)\n",
+            nrow(s4_medical_keys), 100 * nrow(s4_medical_keys) / nrow(all_oxy)))
+cat(sprintf("  Surgical: %d (%.1f%%)\n\n",
+            nrow(s4_surgical_keys), 100 * nrow(s4_surgical_keys) / nrow(all_oxy)))
+cat("Primary comparative population, before matching:\n")
+cat(sprintf("  Morphine:  %d\n", nrow(s3_morphine_keys)))
+cat(sprintf("  Oxycodone: %d\n", nrow(s3_oxycodone_keys)))
