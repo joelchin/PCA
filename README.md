@@ -10,7 +10,7 @@ children, using an electronic health record (EPIC) extract.
 
 ## Requirements
 
-- R >= 4.4 (the manuscript analyses were run in R 4.5.3)
+- R >= 4.4 (the manuscript analyses were run in R 4.3.2)
 - Packages: `tidyverse`, `lubridate`, `readxl`, `MatchIt`, `logistf`,
   `survival`, `survminer`, `gtsummary`, `flextable`, `officer`, `furrr`,
   `future`, `tictoc`, `zip` (optionally `ragg` for the figure export).
