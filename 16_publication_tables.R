@@ -86,7 +86,7 @@
 #   pre_match, post_match and table4_matched_outcomes are built directly
 #   from the live pipeline objects (psm_data, matched_data) rather than
 #   reconstructed from saved keys, keeping population figures mechanically
-#   identical to 09_comparative_psm.R. add_psm_covariates() is applied only
+#   identical to 10_comparative_PSM.R. add_psm_covariates() is applied only
 #   to post_match (psm_data already carries those covariates).
 #
 #   Table 5 draws on four objects from 15_rotation_analysis.R (tbl5, ft5b,
@@ -127,11 +127,11 @@ stopifnot(
   exists("anaesthesia_events_clean"),
   exists("anaesthesia_ax_clean"),
   exists("pain_scores_clean"),
-  exists("s4_surgical_keys")   # from 06_classify_cohorts.R; used in the surgical-vs-medical check
+  exists("s4_surgical_keys")   # from 6_cohort_classification.R; used in the surgical-vs-medical check
 )
 
 # psm_data, matched_data and match_out must exist in-session (built by
-# 09_comparative_psm.R, run earlier in the same session, NOT loaded
+# 10_comparative_PSM.R, run earlier in the same session, NOT loaded
 # from a saved .rds).
 stopifnot(
   exists("psm_data"),
@@ -140,10 +140,10 @@ stopifnot(
 )
 if (!inherits(match_out, "matchit")) {
   stop("match_out is not a MatchIt object (class: ", paste(class(match_out), collapse = "/"),
-       "). Re-run 09_comparative_psm.R in THIS session; do not rely on objects restored from a saved workspace.")
+       "). Re-run 10_comparative_PSM.R in THIS session; do not rely on objects restored from a saved workspace.")
 }
 
-stopifnot("matched_data must be the version rebuilt by 13_subgroup_analyses.R (needs episode_duration_hrs.x)" =
+stopifnot("matched_data must be the version rebuilt by 13_subgroups.R (needs episode_duration_hrs.x)" =
             "episode_duration_hrs.x" %in% names(matched_data))
 
 stopifnot("case_type_refined" %in% names(pca_episodes_flagged))
@@ -152,7 +152,7 @@ stopifnot(
   "peak_pain_score" %in% names(pca_episodes_flagged),
   "time_weighted_mean_pain" %in% names(pca_episodes_flagged)
 )
-cat("Pain score outcomes confirmed pre-computed (from 04_derive_episode_flags.R):\n")
+cat("Pain score outcomes confirmed pre-computed (from 4_flags.R):\n")
 cat("  peak_pain_score, time_weighted_mean_pain\n\n")
 
 # ============================================================
@@ -210,13 +210,29 @@ attach_footnote <- function(tbl, text) {
   }
 }
 
+# ---- Denominator helpers: footnotes carry computed n, never typed n ----
+n_ev   <- function(x) sum(!is.na(x))
+fmt_n  <- function(x) formatC(x, big.mark = ",", format = "d")
+and_list <- function(x) {
+  if (length(x) <= 2) paste(x, collapse = " and ")
+  else paste0(paste(x[-length(x)], collapse = ", "), ", and ", x[length(x)])
+}
+# vars: named vector, name = wording used in the footnote, value = column
+denom_sentence <- function(df, vars, total) {
+  ev    <- vapply(vars, function(v) n_ev(df[[v]]), integer(1))
+  short <- ev[ev < total]
+  if (length(short) == 0) return("")
+  sprintf("Evaluable episodes differ from %s for %s; percentages and medians use these denominators. ",
+          fmt_n(total), and_list(sprintf("%s (n=%s)", names(short), fmt_n(short))))
+}
+
 # ============================================================
 # SHARED BUILDING BLOCKS: line of therapy and true patient ID
 # ============================================================
 # drug_line_number counts DISTINCT DRUG CHANGES within an admission
 # (PAT_ENC_CSN_ID), so three consecutive morphine episodes are all
 # "1st line" and a switch to oxycodone afterwards is "2nd line". Grouped
-# by admission to match is_first_line / is_rotation in 04_derive_episode_flags.R, so
+# by admission to match is_first_line / is_rotation in 4_flags.R, so
 # "1st line" is identical to is_first_line == TRUE.
 pca_line_lookup <- pca_episodes_flagged |>
   arrange(PAT_ENC_CSN_ID, episode_start) |>
@@ -570,11 +586,22 @@ t2_excl_txt <- sprintf(
   if (n_no_end == n_no_metrics) "no recorded episode end time" else "no episode-level metrics",
   n_unk_mode)
 
+if (n_ev(s4_oxy_t2$peak_pain_score) != n_ev(s4_oxy_t2$time_weighted_mean_pain))
+  warning("Peak and time-weighted pain rows have different n: split them in the footnote")
+t2_denom_txt <- denom_sentence(
+  s4_oxy_t2,
+  c("antiemetic"          = "reactive_antiemetic_final",
+    "pain scores"         = "peak_pain_score",
+    "total dose"          = "total_dose_mcg_kg_hr",
+    "background infusion" = "mcg_per_kg_hr"),
+  total = nrow(s4_oxy_t2))
+
 t2_footnote <- paste0(
   "Continuous: median (IQR); categorical: n (%). Patient-level: one row per patient (earliest oxycodone episode); episode-level: every oxycodone episode, including rotations. ",
   "Line of therapy counts distinct drug changes within an admission. ",
   "Antiemetic and time-weighted pain definitions as in Methods (episodes with unreliable anaesthesia timing excluded from antiemetic measures); antipruritic, no time filter; naloxone reversal manually chart-reviewed. ",
-  "Total dose is restricted to episodes with \u226580% pump flowsheet coverage. ",
+  t2_denom_txt,
+   "Total dose is restricted to episodes with \u226580% pump flowsheet coverage. ",
   t2_excl_txt, " ",
   "Abbreviations: IQR, interquartile range; PCA, patient-controlled analgesia; NCA, nurse-controlled analgesia.")
 
@@ -1031,6 +1058,27 @@ n_tw_6     <- sum(!is.na(table4_matched_outcomes$time_weighted_mean_pain_6plus))
 cat(sprintf("Pain rows: all ages n=%d (peak) / %d (time-weighted); age >=6 n=%d / %d\n\n",
             n_peak_all, n_tw_all, n_peak_6, n_tw_6))
 
+n_matched <- nrow(table4_matched_outcomes)
+by_arm <- function(var) {
+  tab <- table4_matched_outcomes |> group_by(drug) |>
+    summarise(n = n_ev(.data[[var]]), .groups = "drop")
+  setNames(tab$n, as.character(tab$drug))
+}
+fmt_arm <- function(x) sprintf("%d; morphine %d, oxycodone %d", sum(x), x[["Morphine"]], x[["Oxycodone"]])
+
+pain_arm <- by_arm("peak_pain_score")
+t4_denom <- paste0("Evaluable episodes differ from ", n_matched,
+                   " for pain scores (", fmt_arm(pain_arm), ")")
+have_dose <- all(c("total_dose_mcg_kg_hr", "background_mcg_kg_hr") %in% names(table4_matched_outcomes))
+if (have_dose) {
+  dose_arm <- by_arm("total_dose_mcg_kg_hr"); bg_arm <- by_arm("background_mcg_kg_hr")
+  t4_denom <- if (identical(dose_arm, bg_arm)) {
+    paste0(t4_denom, " and for total dose and background infusion (", fmt_arm(dose_arm), ").")
+  } else {
+    paste0(t4_denom, ", total dose (", fmt_arm(dose_arm), "), and background infusion (", fmt_arm(bg_arm), ").")
+  }
+} else t4_denom <- paste0(t4_denom, ".")
+
 # Footnote piece that depends on the data: whether flowsheet linkage
 # differed by drug in THIS matched population.
 n_t4 <- nrow(table4_matched_outcomes)
@@ -1063,7 +1111,7 @@ t4_footnote <- paste0(
   "Pain scores are shown for all ages and for the pre-specified subset aged \u22656 years (some pairs lose a member). ",
   "Time-weighted mean pain weights each reading by the time until the next reading. ",
   "Episode duration is descriptive, not a pre-defined outcome. ",
-  dose_sentence, " ",
+  dose_sentence, " ", t4_denom, " ",
   "Abbreviations: IQR, interquartile range; NCA, nurse-controlled analgesia; PCA, patient-controlled analgesia.")
 
 tbl4 <- table4_matched_outcomes |>
